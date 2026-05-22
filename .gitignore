@@ -1,0 +1,29 @@
+# 敏感配置（含Cookie，绝对不能提交）
+config.yaml
+
+# 缓存数据
+data/
+!data/.gitkeep
+
+# 输出报告
+output/
+!output/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
