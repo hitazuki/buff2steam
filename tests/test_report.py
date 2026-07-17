@@ -59,13 +59,13 @@ class TestReportGenerator(unittest.TestCase):
             total_invested_cny=100.0,
             total_received_cny=125.0,
             total_profit_cny=25.0,
-            avg_roi_pct=25.0,
+            balance_ratio_pct=80.0,
             avg_hold_days=5.0,
             holding_count=1,
             holding_invested_cny=5.0,
             best_trade=matched_trades[0],
             worst_trade=matched_trades[0],
-            by_game={"csgo": {"count": 1, "invested_cny": 100.0, "profit_cny": 25.0, "roi_pct": 25.0}}
+            by_game={"csgo": {"count": 1, "invested_cny": 100.0, "profit_cny": 25.0, "balance_ratio_pct": 80.0}}
         )
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -82,6 +82,8 @@ class TestReportGenerator(unittest.TestCase):
                 self.assertIn("AK-47 | 红线", content)
                 self.assertIn("100.00", content)
                 self.assertIn("125.00", content)
+                self.assertIn("倒余额比例(%)", content)
+                self.assertIn("80.00", content)
                 self.assertIn("M4A4 | 牙仙", content)
                 self.assertIn("其他账号交易", content)
                 self.assertIn("999999", content)
@@ -99,7 +101,8 @@ class TestReportGenerator(unittest.TestCase):
                 self.assertIn("M4A4 | 牙仙", content)
                 self.assertIn("Steam 挂刀收益分析看板", content)
                 self.assertIn("total_profit", content)
-                self.assertIn("avg_roi", content)
+                self.assertIn("balance_ratio", content)
+                self.assertIn("综合倒余额比例", content)
                 self.assertIn("other_holdings", content)
                 self.assertIn("999999", content)
                 self.assertIn('"buy_source": "c5"', content)
@@ -128,7 +131,7 @@ class TestReportGenerator(unittest.TestCase):
                 sell_price_cny=125.0,
                 sold_at="2026-05-06T10:00:00",
                 profit_cny=25.0,
-                roi_pct=25.0,
+                balance_ratio_pct=80.0,
                 hold_days=5
             )
         ]
@@ -149,13 +152,13 @@ class TestReportGenerator(unittest.TestCase):
             total_invested_cny=100.0,
             total_received_cny=125.0,
             total_profit_cny=25.0,
-            avg_roi_pct=25.0,
+            balance_ratio_pct=80.0,
             avg_hold_days=5.0,
             holding_count=1,
             holding_invested_cny=5.0,
             best_trade=matched_trades[0],
             worst_trade=matched_trades[0],
-            by_game={"csgo": {"count": 1, "invested_cny": 100.0, "profit_cny": 25.0, "roi_pct": 25.0}}
+            by_game={"csgo": {"count": 1, "invested_cny": 100.0, "profit_cny": 25.0, "balance_ratio_pct": 80.0}}
         )
         
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -101,14 +101,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- 平均投资回报率 -->
+            <!-- 倒余额比例 -->
             <div class="glass rounded-2xl p-6 glow-blue hover:border-blue-500/30 transition-all duration-300">
                 <div class="flex items-center justify-between">
-                    <span class="text-sm font-medium text-slate-400">平均投资回报率 (ROI)</span>
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">ROI</span>
+                    <span class="text-sm font-medium text-slate-400">综合倒余额比例</span>
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">比例</span>
                 </div>
                 <div class="mt-4 flex items-baseline gap-2">
-                    <span class="text-3xl font-bold tracking-tight text-blue-400 font-display" id="stat-avg-roi">0.00%</span>
+                    <span class="text-3xl font-bold tracking-tight text-blue-400 font-display" id="stat-balance-ratio">0.00%</span>
                 </div>
                 <div class="mt-2 text-xs text-slate-400 flex items-center gap-1.5">
                     <span>平均持仓天数:</span>
@@ -370,7 +370,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 }
 
                 const total_buy = g.count * g.buy_price;
-                const roi = total_buy > 0 ? (g.profit / total_buy) * 100 : 0;
+                const total_received = g.count * g.sell_price_cny;
+                const balance_ratio = total_received > 0 ? (total_buy / total_received) * 100 : 0;
 
                 return {
                     buy_source: g.buy_source,
@@ -382,7 +383,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     sell_price_received: g.sell_price_received_unit,
                     sell_currency: g.sell_currency,
                     profit: g.profit,
-                    roi: roi,
+                    balance_ratio: balance_ratio,
                     hold_days: avg_hold_days,
                     bought_range: bought_range,
                     sold_range: sold_range,
@@ -563,7 +564,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const sum = RAW_DATA.summary;
             document.getElementById('stat-total-profit').textContent = `¥${sum.total_profit.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
             document.getElementById('stat-total-trades').textContent = sum.total_trades;
-            document.getElementById('stat-avg-roi').textContent = `${sum.avg_roi.toFixed(2)}%`;
+            document.getElementById('stat-balance-ratio').textContent = `${sum.balance_ratio.toFixed(2)}%`;
             document.getElementById('stat-avg-hold').textContent = sum.avg_hold_days.toFixed(1);
             document.getElementById('stat-total-invested').textContent = `¥${sum.total_invested.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
             document.getElementById('stat-total-received').textContent = `¥${sum.total_received.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
@@ -790,7 +791,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('buy_price')">买入单价 ${getSortArrow('buy_price')}</th>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('sell_price_cny')">到手单价 ${getSortArrow('sell_price_cny')}</th>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('profit')">总净利润 ${getSortArrow('profit')}</th>
-                <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('roi')">ROI ${getSortArrow('roi')}</th>
+                <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('balance_ratio')">倒余额比例 ${getSortArrow('balance_ratio')}</th>
                 <th class="py-3.5 px-4 text-center cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('hold_days')">平均持仓 ${getSortArrow('hold_days')}</th>
                 <th class="py-3.5 px-4 text-center cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('sold_at')">交易日期范围 ${getSortArrow('sold_at')}</th>
             `;
@@ -849,7 +850,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <div>${profitSign}¥${t.profit.toFixed(2)}</div>
                         ${singleProfitStr}
                     </td>
-                    <td class="py-3 px-4 text-right font-display ${profitClass}">${profitSign}${t.roi.toFixed(1)}%</td>
+                    <td class="py-3 px-4 text-right font-display text-blue-400">${t.balance_ratio.toFixed(1)}%</td>
                     <td class="py-3 px-4 text-center font-display">${t.hold_days}天</td>
                     <td class="py-3 px-4 text-center text-xs">
                         <div class="text-slate-300 font-display">${t.sold_range}</div>
@@ -1249,7 +1250,7 @@ def generate_html_report(trades: list, unmatched_buys: list, summary, output_pat
             "sold_at": t.sold_at,
             "hold_days": t.hold_days,
             "profit": t.profit_cny,
-            "roi": t.roi_pct,
+            "balance_ratio": t.balance_ratio_pct,
             "buy_no": t.buy_order_no,
             "buff_no": t.buy_order_no,
             "steam_id": t.steam_row_id,
@@ -1302,7 +1303,7 @@ def generate_html_report(trades: list, unmatched_buys: list, summary, output_pat
         best_trade = {
             "name": summary.best_trade.name_zh or summary.best_trade.name,
             "profit": summary.best_trade.profit_cny,
-            "roi": summary.best_trade.roi_pct
+            "balance_ratio": summary.best_trade.balance_ratio_pct
         }
 
     worst_trade = None
@@ -1310,7 +1311,7 @@ def generate_html_report(trades: list, unmatched_buys: list, summary, output_pat
         worst_trade = {
             "name": summary.worst_trade.name_zh or summary.worst_trade.name,
             "profit": summary.worst_trade.profit_cny,
-            "roi": summary.worst_trade.roi_pct
+            "balance_ratio": summary.worst_trade.balance_ratio_pct
         }
 
     summary_dict = {
@@ -1318,7 +1319,7 @@ def generate_html_report(trades: list, unmatched_buys: list, summary, output_pat
         "total_invested": summary.total_invested_cny,
         "total_received": summary.total_received_cny,
         "total_profit": summary.total_profit_cny,
-        "avg_roi": summary.avg_roi_pct,
+        "balance_ratio": summary.balance_ratio_pct,
         "avg_hold_days": summary.avg_hold_days,
         "holding_count": summary.holding_count,
         "holding_invested": summary.holding_invested_cny,

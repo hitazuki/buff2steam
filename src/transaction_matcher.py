@@ -34,7 +34,7 @@ class MatchedTrade:
 
     # 收益计算（由 profit_calculator 填充）
     profit_cny: float = 0.0
-    roi_pct: float = 0.0
+    balance_ratio_pct: float = 0.0
     hold_days: int = 0
 
     @property

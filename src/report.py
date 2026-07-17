@@ -87,7 +87,10 @@ def _group_trades(trades: list[MatchedTrade]) -> list[dict]:
             sold_range = "-"
 
         total_buy = g["count"] * g["buy_price_cny"]
-        roi_pct = (g["total_profit_cny"] / total_buy * 100) if total_buy > 0 else 0.0
+        total_received = g["count"] * g["sell_price_cny"]
+        balance_ratio_pct = (
+            total_buy / total_received * 100 if total_received > 0 else 0.0
+        )
         latest_sold_at = max(g["sold_at_list"]) if g["sold_at_list"] else ""
 
         result.append({
@@ -98,7 +101,7 @@ def _group_trades(trades: list[MatchedTrade]) -> list[dict]:
             "buy_price_cny": g["buy_price_cny"],
             "sell_price_cny": g["sell_price_cny"],
             "total_profit_cny": g["total_profit_cny"],
-            "roi_pct": roi_pct,
+            "balance_ratio_pct": balance_ratio_pct,
             "avg_hold_days": avg_hold_days,
             "bought_range": bought_range,
             "sold_range": sold_range,
@@ -314,7 +317,7 @@ class ReportGenerator:
                 "买入价(CNY)", "买入时间",
                 "Steam到手价(原币)", "原始货币", "Steam到手价(CNY)",
                 "卖出时间", "持仓天数",
-                "净利润(CNY)", "ROI(%)",
+                "净利润(CNY)", "倒余额比例(%)",
                 "买入订单号", "Steam记录ID", "买入SteamID", "买入平台",
             ])
 
@@ -333,7 +336,7 @@ class ReportGenerator:
                     t.sold_at[:10] if t.sold_at else "",
                     t.hold_days,
                     f"{t.profit_cny:.2f}",
-                    f"{t.roi_pct:.2f}",
+                    f"{t.balance_ratio_pct:.2f}",
                     t.buy_order_no,
                     t.steam_row_id,
                     "",
@@ -389,7 +392,7 @@ class ReportGenerator:
                 "", "", f"{summary.total_received_cny:.2f}",
                 "", f"{summary.avg_hold_days:.1f}",
                 f"{summary.total_profit_cny:.2f}",
-                f"{summary.avg_roi_pct:.2f}",
+                f"{summary.balance_ratio_pct:.2f}",
                 "", "", "", "",
             ])
 
@@ -441,14 +444,13 @@ class ReportGenerator:
 
     def _print_summary_panel(self, summary: TradeSummary) -> None:
         profit_color = "bright_green" if summary.total_profit_cny >= 0 else "bright_red"
-        roi_color = "bright_green" if summary.avg_roi_pct >= 0 else "bright_red"
 
         lines = [
             f"[bold]完成交易[/bold]：[white]{summary.total_trades}[/white] 笔",
             f"[bold]总买入成本[/bold]：[yellow]¥{summary.total_invested_cny:,.2f}[/yellow]",
             f"[bold]总到手金额[/bold]：[yellow]¥{summary.total_received_cny:,.2f}[/yellow]",
             f"[bold]总净利润[/bold]：[{profit_color}]¥{summary.total_profit_cny:,.2f}[/{profit_color}]",
-            f"[bold]平均 ROI[/bold]：[{roi_color}]{summary.avg_roi_pct:.2f}%[/{roi_color}]",
+            f"[bold]倒余额比例[/bold]：[bright_blue]{summary.balance_ratio_pct:.2f}%[/bright_blue]",
             f"[bold]平均持仓[/bold]：[white]{summary.avg_hold_days:.1f}[/white] 天",
             f"[bold]当前持仓[/bold]：[cyan]{summary.holding_count}[/cyan] 件"
             f"（成本 [yellow]¥{summary.holding_invested_cny:,.2f}[/yellow]）",
@@ -458,13 +460,13 @@ class ReportGenerator:
             t = summary.best_trade
             lines.append(
                 f"[bold]最佳单笔[/bold]：[green]{t.name_zh or t.name}[/green]"
-                f" +¥{t.profit_cny:.2f} ({t.roi_pct:.1f}%)"
+                f" +¥{t.profit_cny:.2f}（倒余额 {t.balance_ratio_pct:.1f}%）"
             )
         if summary.worst_trade and summary.worst_trade.profit_cny < 0:
             t = summary.worst_trade
             lines.append(
                 f"[bold]最差单笔[/bold]：[red]{t.name_zh or t.name}[/red]"
-                f" ¥{t.profit_cny:.2f} ({t.roi_pct:.1f}%)"
+                f" ¥{t.profit_cny:.2f}（倒余额 {t.balance_ratio_pct:.1f}%）"
             )
 
         console.print(Panel(
@@ -497,24 +499,21 @@ class ReportGenerator:
         table.add_column("买入单价\n(CNY)", justify="right", width=10)
         table.add_column("到手单价\n(CNY)", justify="right", width=10)
         table.add_column("总利润\n(CNY)", justify="right", width=10)
-        table.add_column("ROI", justify="right", width=8)
+        table.add_column("倒余额\n比例", justify="right", width=8)
         table.add_column("平均持仓\n天数", justify="center", width=8)
         table.add_column("买入日期范围", justify="center", width=15)
         table.add_column("卖出日期范围", justify="center", width=15)
 
         for t in grouped_trades:
             profit_str = f"¥{t['total_profit_cny']:.2f}"
-            roi_str = f"{t['roi_pct']:.1f}%"
+            balance_ratio_str = f"{t['balance_ratio_pct']:.1f}%"
 
             if t['total_profit_cny'] > 0:
                 profit_style = "bright_green"
-                roi_style = "bright_green"
             elif t['total_profit_cny'] < 0:
                 profit_style = "bright_red"
-                roi_style = "bright_red"
             else:
                 profit_style = "white"
-                roi_style = "white"
 
             name_display = t['name_zh'] if t['name_zh'] else t['name']
             if len(name_display) > 35:
@@ -528,7 +527,7 @@ class ReportGenerator:
                 f"¥{t['buy_price_cny']:.2f}",
                 f"¥{t['sell_price_cny']:.2f}",
                 Text(profit_str, style=profit_style),
-                Text(roi_str, style=roi_style),
+                Text(balance_ratio_str, style="bright_blue"),
                 str(t['avg_hold_days']),
                 t['bought_range'],
                 t['sold_range'],
@@ -669,12 +668,12 @@ class ReportGenerator:
 
         panels = []
         for game, stats in summary.by_game.items():
-            color = "bright_green" if stats["roi_pct"] >= 0 else "bright_red"
+            color = "bright_green" if stats["profit_cny"] >= 0 else "bright_red"
             content = (
                 f"交易笔数：{stats['count']}\n"
                 f"总买入：¥{stats['invested_cny']:,.2f}\n"
                 f"净利润：[{color}]¥{stats['profit_cny']:,.2f}[/{color}]\n"
-                f"ROI：[{color}]{stats['roi_pct']:.2f}%[/{color}]"
+                f"倒余额比例：[bright_blue]{stats['balance_ratio_pct']:.2f}%[/bright_blue]"
             )
             panels.append(Panel(
                 content,
@@ -736,19 +735,21 @@ class ReportGenerator:
                 total_received = float(summary_row[8]) if summary_row[8] else 0.0
                 avg_hold = float(summary_row[10]) if summary_row[10] else 0.0
                 total_profit = float(summary_row[11]) if summary_row[11] else 0.0
-                avg_roi = float(summary_row[12]) if summary_row[12] else 0.0
+                balance_ratio = (
+                    total_invested / total_received * 100
+                    if total_received > 0 else 0.0
+                )
             except (ValueError, IndexError):
-                total_invested = total_received = avg_hold = total_profit = avg_roi = 0.0
+                total_invested = total_received = avg_hold = total_profit = balance_ratio = 0.0
 
             profit_color = "bright_green" if total_profit >= 0 else "bright_red"
-            roi_color = "bright_green" if avg_roi >= 0 else "bright_red"
 
             lines = [
                 f"[bold]完成交易[/bold]：[white]{len(trades)}[/white] 笔",
                 f"[bold]总买入成本[/bold]：[yellow]¥{total_invested:,.2f}[/yellow]",
                 f"[bold]总到手金额[/bold]：[yellow]¥{total_received:,.2f}[/yellow]",
                 f"[bold]总净利润[/bold]：[{profit_color}]¥{total_profit:,.2f}[/{profit_color}]",
-                f"[bold]平均 ROI[/bold]：[{roi_color}]{avg_roi:.2f}%[/{roi_color}]",
+                f"[bold]倒余额比例[/bold]：[bright_blue]{balance_ratio:.2f}%[/bright_blue]",
                 f"[bold]平均持仓[/bold]：[white]{avg_hold:.1f}[/white] 天",
                 f"[bold]当前持仓[/bold]：[cyan]{len(holdings)}[/cyan] 件",
             ]
@@ -823,7 +824,10 @@ class ReportGenerator:
                     latest_sold = ""
 
                 total_buy = gt["count"] * gt["buy_price"]
-                roi_pct = (gt["total_profit"] / total_buy * 100) if total_buy > 0 else 0.0
+                total_received = gt["count"] * gt["sell_price"]
+                balance_ratio_pct = (
+                    total_buy / total_received * 100 if total_received > 0 else 0.0
+                )
 
                 grouped_trades_list.append({
                     "buy_source": gt["buy_source"],
@@ -833,7 +837,7 @@ class ReportGenerator:
                     "buy_price": gt["buy_price"],
                     "sell_price": gt["sell_price"],
                     "total_profit": gt["total_profit"],
-                    "roi": roi_pct,
+                    "balance_ratio": balance_ratio_pct,
                     "avg_hold_days": avg_hold,
                     "bought_range": b_range,
                     "sold_range": s_range,
@@ -860,24 +864,21 @@ class ReportGenerator:
             table.add_column("买入单价\n(CNY)", justify="right", width=10)
             table.add_column("到手单价\n(CNY)", justify="right", width=10)
             table.add_column("总利润\n(CNY)", justify="right", width=10)
-            table.add_column("ROI", justify="right", width=8)
+            table.add_column("倒余额\n比例", justify="right", width=8)
             table.add_column("平均持仓\n天数", justify="center", width=8)
             table.add_column("买入日期范围", justify="center", width=11)
             table.add_column("卖出日期范围", justify="center", width=11)
 
             for t in display_trades:
                 profit_str = f"¥{t['total_profit']:.2f}"
-                roi_str = f"{t['roi']:.1f}%"
+                balance_ratio_str = f"{t['balance_ratio']:.1f}%"
 
                 if t['total_profit'] > 0:
                     profit_style = "bright_green"
-                    roi_style = "bright_green"
                 elif t['total_profit'] < 0:
                     profit_style = "bright_red"
-                    roi_style = "bright_red"
                 else:
                     profit_style = "white"
-                    roi_style = "white"
 
                 name_display = t['name_zh'] if t['name_zh'] else t['name_en']
                 if len(name_display) > 35:
@@ -891,7 +892,7 @@ class ReportGenerator:
                     f"¥{t['buy_price']:.2f}",
                     f"¥{t['sell_price']:.2f}",
                     Text(profit_str, style=profit_style),
-                    Text(roi_str, style=roi_style),
+                    Text(balance_ratio_str, style="bright_blue"),
                     str(t['avg_hold_days']),
                     t['bought_range'],
                     t['sold_range'],

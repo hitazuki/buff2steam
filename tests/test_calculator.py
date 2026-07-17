@@ -62,11 +62,11 @@ class TestProfitCalculator(unittest.TestCase):
         
         # Verify matched trade properties updated
         self.assertEqual(trades[0].profit_cny, 25.0)
-        self.assertEqual(trades[0].roi_pct, 25.0)
+        self.assertEqual(trades[0].balance_ratio_pct, 80.0)
         self.assertEqual(trades[0].hold_days, 5)
         
         self.assertEqual(trades[1].profit_cny, 200.0)
-        self.assertEqual(trades[1].roi_pct, 25.0)
+        self.assertEqual(trades[1].balance_ratio_pct, 80.0)
         self.assertEqual(trades[1].hold_days, 1)
         
         # Verify summary
@@ -74,7 +74,7 @@ class TestProfitCalculator(unittest.TestCase):
         self.assertEqual(summary.total_invested_cny, 900.0) # 100 + 800
         self.assertEqual(summary.total_received_cny, 1125.0) # 125 + 1000
         self.assertEqual(summary.total_profit_cny, 225.0) # 25 + 200
-        self.assertEqual(summary.avg_roi_pct, 25.0) # (225 / 900) * 100
+        self.assertEqual(summary.balance_ratio_pct, 80.0) # (900 / 1125) * 100
         self.assertEqual(summary.avg_hold_days, 3.0) # (5 + 1) / 2
         self.assertEqual(summary.holding_count, 1)
         self.assertEqual(summary.holding_invested_cny, 5.0)

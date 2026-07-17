@@ -1,6 +1,6 @@
 """
 收益计算模块
-对已匹配的交易计算净利润、ROI、持仓天数等指标
+对已匹配的交易计算净利润、倒余额比例、持仓天数等指标
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class TradeSummary:
     total_invested_cny: float = 0  # 总买入金额（CNY）
     total_received_cny: float = 0  # 总到手金额（CNY）
     total_profit_cny: float = 0    # 总净利润（CNY）
-    avg_roi_pct: float = 0         # 平均 ROI（%）
+    balance_ratio_pct: float = 0   # 综合倒余额比例（%）
     best_trade: MatchedTrade | None = None    # 利润最高的单笔
     worst_trade: MatchedTrade | None = None   # 亏损最大的单笔
     avg_hold_days: float = 0       # 平均持仓天数
@@ -39,7 +39,7 @@ class ProfitCalculator:
 
     计算公式：
         净利润 = Steam到手价(CNY) - 买入价(CNY)
-        ROI    = 净利润 / 买入价 × 100%
+        倒余额比例 = 买入价 / Steam到手价 × 100%
         持仓天数 = (卖出时间 - 买入时间).days
 
     说明：
@@ -70,11 +70,11 @@ class ProfitCalculator:
 
         logger.info(
             "[Calculator] 统计完成：%d 笔交易，总投入 ¥%.2f，"
-            "总收益 ¥%.2f，平均 ROI %.1f%%",
+            "总收益 ¥%.2f，倒余额比例 %.1f%%",
             summary.total_trades,
             summary.total_invested_cny,
             summary.total_profit_cny,
-            summary.avg_roi_pct,
+            summary.balance_ratio_pct,
         )
         return trades, summary
 
@@ -87,10 +87,12 @@ class ProfitCalculator:
         """计算单笔交易的收益指标（原地修改）"""
         trade.profit_cny = round(trade.sell_price_cny - trade.buy_price_cny, 2)
 
-        if trade.buy_price_cny > 0:
-            trade.roi_pct = round(trade.profit_cny / trade.buy_price_cny * 100, 2)
+        if trade.sell_price_cny > 0:
+            trade.balance_ratio_pct = round(
+                trade.buy_price_cny / trade.sell_price_cny * 100, 2
+            )
         else:
-            trade.roi_pct = 0.0
+            trade.balance_ratio_pct = 0.0
 
         # 持仓天数
         try:
@@ -117,8 +119,10 @@ class ProfitCalculator:
         s.total_received_cny = round(sum(t.sell_price_cny for t in trades), 2)
         s.total_profit_cny = round(sum(t.profit_cny for t in trades), 2)
 
-        if s.total_invested_cny > 0:
-            s.avg_roi_pct = round(s.total_profit_cny / s.total_invested_cny * 100, 2)
+        if s.total_received_cny > 0:
+            s.balance_ratio_pct = round(
+                s.total_invested_cny / s.total_received_cny * 100, 2
+            )
 
         if trades:
             s.avg_hold_days = round(sum(t.hold_days for t in trades) / len(trades), 1)
@@ -137,12 +141,15 @@ class ProfitCalculator:
 
         for game, g_trades in game_groups.items():
             invested = sum(t.buy_price_cny for t in g_trades)
+            received = sum(t.sell_price_cny for t in g_trades)
             profit = sum(t.profit_cny for t in g_trades)
             s.by_game[game] = {
                 "count": len(g_trades),
                 "invested_cny": round(invested, 2),
                 "profit_cny": round(profit, 2),
-                "roi_pct": round(profit / invested * 100, 2) if invested > 0 else 0.0,
+                "balance_ratio_pct": (
+                    round(invested / received * 100, 2) if received > 0 else 0.0
+                ),
             }
 
         return s
