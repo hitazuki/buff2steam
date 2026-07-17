@@ -53,7 +53,12 @@ class BuffClient:
     # 公共接口
     # ------------------------------------------------------------------
 
-    def fetch_buy_orders(self, game: str, cache_path: Path | None = None) -> list[dict]:
+    def fetch_buy_orders(
+        self,
+        game: str,
+        cache_path: Path | None = None,
+        force_refresh: bool = False,
+    ) -> list[dict]:
         """
         拉取指定游戏的全部买单历史
 
@@ -66,7 +71,7 @@ class BuffClient:
         """
         game = GAME_IDS.get(game, game)
 
-        if cache_path and cache_path.exists():
+        if cache_path and cache_path.exists() and not force_refresh:
             logger.info("[BUFF] 读取缓存: %s", cache_path)
             with open(cache_path, encoding="utf-8") as f:
                 return json.load(f)

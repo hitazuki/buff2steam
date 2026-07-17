@@ -1,6 +1,6 @@
 """
 主入口
-读取配置 → 拉取 BUFF/Steam 数据 → 匹配 → 计算 → 输出报告
+读取配置 → 拉取 BUFF/C5/Steam 数据 → 匹配 → 计算 → 输出报告
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.buff_client import BuffClient
+from src.c5_client import C5Client, C5ClientError
 from src.steam_client import SteamClient
 from src.currency_converter import CurrencyConverter
 from src.transaction_matcher import TransactionMatcher
@@ -55,7 +56,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Steam 挂刀收益统计工具（BUFF → Steam）"
+        description="Steam 挂刀收益统计工具（BUFF/C5 → Steam）"
     )
     parser.add_argument(
         "--config", default="config.yaml",
@@ -86,6 +87,7 @@ def main() -> None:
     # 1. 加载配置
     cfg = load_config(args.config)
     buff_cfg = cfg.get("buff", {})
+    c5_cfg = cfg.get("c5", {})
     steam_cfg = cfg.get("steam", {})
     currency_cfg = cfg.get("currency", {})
     settings = cfg.get("settings", {})
@@ -106,6 +108,13 @@ def main() -> None:
         page_size=buff_cfg.get("page_size", 20),
         max_pages=buff_cfg.get("max_pages", 100),
     )
+
+    c5_enabled = bool(c5_cfg.get("enabled", False))
+    c5_client = C5Client(
+        cookie=c5_cfg.get("cookie", ""),
+        page_size=c5_cfg.get("page_size", 60),
+        max_pages=c5_cfg.get("max_pages", 100),
+    ) if c5_enabled else None
 
     steam_client = SteamClient(
         session_id=steam_cfg.get("session_id", ""),
@@ -142,7 +151,8 @@ def main() -> None:
         logger.info("正在验证 Cookie...")
         buff_ok = buff_client.check_login()
         steam_ok = steam_client.check_login()
-        if not buff_ok or not steam_ok:
+        c5_ok = c5_client.check_login() if c5_client else True
+        if not buff_ok or not steam_ok or not c5_ok:
             logger.error("Cookie 验证失败，请更新配置后重试。使用 --skip-login-check 跳过此步骤。")
             sys.exit(1)
 
@@ -153,24 +163,51 @@ def main() -> None:
     if current_steam_id:
         logger.info("当前登录的 Steam ID: %s", current_steam_id)
     else:
+        if c5_enabled:
+            logger.error(
+                "启用 C5 时必须能确定当前 SteamID。请配置 steam.steam_id，"
+                "或提供有效的 steam_login_secure，避免跨账号混算。"
+            )
+            sys.exit(1)
         logger.warning("未检测到当前 Steam ID，将跳过按 Steam 账号分区匹配的逻辑")
 
-    # 4. 拉取 BUFF 买单历史（CS2 + DOTA2）
+    # 4. 拉取买单历史（BUFF + 可选 C5）
     games: list[str] = buff_cfg.get("games", ["csgo"])
-    all_buff_orders: list[dict] = []
+    all_buy_orders: list[dict] = []
 
     for game in games:
-        cache_file = data_dir / f"buff_{game}_orders.json" if not args.no_cache else None
-        orders = buff_client.fetch_buy_orders(game=game, cache_path=cache_file)
-        all_buff_orders.extend(orders)
+        cache_file = data_dir / f"buff_{game}_orders.json"
+        orders = buff_client.fetch_buy_orders(
+            game=game,
+            cache_path=cache_file,
+            force_refresh=args.no_cache,
+        )
+        all_buy_orders.extend(orders)
 
-    logger.info("BUFF 总计买单：%d 条（CS2+DOTA2）", len(all_buff_orders))
+    logger.info("BUFF 总计买单：%d 条", len(all_buy_orders))
+
+    if c5_client:
+        c5_cache = data_dir / "c5_buy_orders.json"
+        try:
+            c5_orders = c5_client.fetch_buy_orders(
+                games=games,
+                cache_path=c5_cache,
+                force_refresh=args.no_cache,
+            )
+        except C5ClientError as exc:
+            logger.error("C5 买单拉取失败，为避免使用不完整数据，本次统计已终止：%s", exc)
+            sys.exit(1)
+        all_buy_orders.extend(c5_orders)
+        logger.info("C5 总计买单：%d 件", len(c5_orders))
+
+    logger.info("全部平台总计买单：%d 件", len(all_buy_orders))
 
     # 5. 拉取 Steam 卖单历史
-    steam_cache = data_dir / "steam_sales.json" if not args.no_cache else None
+    steam_cache = data_dir / "steam_sales.json"
     steam_sales = steam_client.fetch_sell_history(
         cache_path=steam_cache,
         fetch_count=steam_cfg.get("fetch_count", 500),
+        force_refresh=args.no_cache,
     )
     logger.info("Steam 总计卖单：%d 条", len(steam_sales))
 
@@ -178,12 +215,12 @@ def main() -> None:
     date_from = settings.get("date_from") or ""
     date_to = settings.get("date_to") or ""
     if date_from or date_to:
-        all_buff_orders, steam_sales = _apply_date_filter(
-            all_buff_orders, steam_sales, date_from, date_to
+        all_buy_orders, steam_sales = _apply_date_filter(
+            all_buy_orders, steam_sales, date_from, date_to
         )
 
     # 7. FIFO 匹配
-    match_result = matcher.match(all_buff_orders, steam_sales, current_steam_id=current_steam_id)
+    match_result = matcher.match(all_buy_orders, steam_sales, current_steam_id=current_steam_id)
 
     # 8. 收益计算
     trades, summary = calculator.calculate(match_result)
@@ -221,7 +258,7 @@ def main() -> None:
 
 
 def _apply_date_filter(
-    buff_orders: list[dict],
+    buy_orders: list[dict],
     steam_sales: list[dict],
     date_from: str,
     date_to: str,
@@ -242,15 +279,15 @@ def _apply_date_filter(
             return False
         return True
 
-    filtered_buff = [o for o in buff_orders if in_range(o.get("created_at", ""))]
+    filtered_buys = [o for o in buy_orders if in_range(o.get("created_at", ""))]
     filtered_steam = [s for s in steam_sales if in_range(s.get("sold_at", ""))]
 
-    logger.info("日期过滤 [%s ~ %s]：BUFF %d→%d 条，Steam %d→%d 条",
+    logger.info("日期过滤 [%s ~ %s]：买单 %d→%d 条，Steam %d→%d 条",
                 date_from or "始", date_to or "今",
-                len(buff_orders), len(filtered_buff),
+                len(buy_orders), len(filtered_buys),
                 len(steam_sales), len(filtered_steam))
 
-    return filtered_buff, filtered_steam
+    return filtered_buys, filtered_steam
 
 
 if __name__ == "__main__":

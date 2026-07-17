@@ -1,11 +1,13 @@
 # buff2steam — Steam 挂刀收益统计工具
 
-> 自动拉取 **网易 BUFF** 买单历史和 **Steam** 社区市场卖单历史，按 FIFO 策略配对，统计每笔挂刀交易的净利润与 ROI。
+> 自动拉取 **网易 BUFF / C5GAME** 买单历史和 **Steam** 社区市场卖单历史，按账号隔离后使用 FIFO 策略配对，统计每笔挂刀交易的净利润与 ROI。
 
 ## 功能特性
 
 - ✅ 支持 **CS2（CSGO）** 和 **DOTA2** 双游戏
 - ✅ 自动拉取 BUFF 买单历史（分页）
+- ✅ 可选拉取 C5 成功买单（手动 Cookie、只读请求）
+- ✅ BUFF/C5 跨平台统一 FIFO，并按接收 SteamID 隔离账号
 - ✅ 自动拉取 Steam 市场卖单历史
 - ✅ **多货币支持**：自动获取实时汇率，将所有收入换算为 CNY
 - ✅ FIFO 自动配对（先买先出）
@@ -59,6 +61,22 @@ pip install -r requirements.txt
   2. 按 `F12` 打开开发者工具 → 切换到 **Application (应用)** 选项卡 → 左侧展开 **Cookies** → 选择 `https://steamcommunity.com`。
   3. 复制 `sessionid` 和 `steamLoginSecure` 的值，分别填入 `config.yaml` 中 `steam` 部分的 `session_id` 和 `steam_login_secure` 字段。
 
+* **启用 C5 买单（可选）**：
+  1. 浏览器登录 [C5GAME](https://www.c5game.com)。
+  2. 从浏览器站点 Cookie 中复制完整 Cookie 请求串，填入 `c5.cookie`。
+  3. 将 `c5.enabled` 改为 `true`。C5 第一版不会被 `get_cookies.py` 自动提取，也不会使用 `app-key`。
+
+```yaml
+c5:
+  enabled: true
+  cookie: "你的完整 C5 Cookie"
+  page_size: 60
+  max_pages: 100
+```
+
+> C5 客户端只调用账号信息、成功买单列表和买单详情三个 GET 接口。Cookie 与账单缓存位于被 `.gitignore` 排除的本地配置和 `data/` 目录，不需要外部服务器。
+> 启用 C5 时必须能从 `steam_login_secure` 识别当前 SteamID；若无法识别，请显式填写 `steam.steam_id`，程序不会在账号未知时混算。
+
 ### 3. 运行
 
 ```bash
@@ -97,6 +115,7 @@ buff2steam/
 ├── src/
 │   ├── main.py                # 主入口
 │   ├── buff_client.py         # BUFF API 客户端
+│   ├── c5_client.py           # C5 Cookie 只读客户端
 │   ├── steam_client.py        # Steam API 客户端
 │   ├── currency_converter.py  # 多货币汇率转换
 │   ├── transaction_matcher.py # FIFO 买卖配对
@@ -112,12 +131,12 @@ buff2steam/
 ## 收益计算说明
 
 ```
-净利润 = Steam到手价(CNY) - BUFF买入价(CNY)
-ROI    = 净利润 / BUFF买入价 × 100%
+净利润 = Steam到手价(CNY) - 买入价(CNY)
+ROI    = 净利润 / 买入价 × 100%
 ```
 
 - **Steam到手价**：已经是扣除平台手续费（Steam 5% + 游戏开发商 10% = 共15%）后的到账金额
-- **BUFF买入价**：买家直接支付的价格，无额外手续费
+- **买入价**：BUFF 使用订单价格；C5 优先使用实际支付金额，多饰品订单按原价比例精确分摊到分
 - **多货币处理**：若 Steam 账号为非 CNY 区，自动按实时汇率换算
 
 ## 注意事项

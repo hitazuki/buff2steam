@@ -13,10 +13,20 @@ buff:
   page_size: 20          # BUFF 每页条数，最大 20
   max_pages: 100         # 最多拉取页数（20*100=2000条）
 
+c5:
+  # 第一版仅支持手动配置网页登录 Cookie；不会使用 app-key 或执行写操作
+  # 抓取游戏沿用上方 buff.games 列表
+  enabled: false
+  cookie: "YOUR_C5_COOKIE_HERE"
+  page_size: 60
+  max_pages: 100
+
 steam:
   # 从浏览器 DevTools → Application → Cookies → steamcommunity.com 获取
   session_id: "YOUR_STEAM_SESSIONID"
   steam_login_secure: "YOUR_STEAM_LOGIN_SECURE"
+  # 可选显式填写；启用 C5 且无法从 steam_login_secure 提取时必须配置
+  steam_id: ""
   # Steam 钱包货币代码（1=USD, 2=GBP, 3=EUR, 5=RUB, 23=CNY, 24=CAD, 34=HKD 等）
   # 脚本会自动从交易记录中检测，此处作为备用
   default_currency: 23

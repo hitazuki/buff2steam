@@ -13,8 +13,8 @@ class TestReportGenerator(unittest.TestCase):
                 game="csgo",
                 name="AK-47 | Redline (Field-Tested)",
                 name_zh="AK-47 | 红线",
-                buff_order_id="b1",
-                buff_order_no="bn1",
+                buy_order_id="b1",
+                buy_order_no="bn1",
                 buy_price_cny=100.0,
                 buy_quantity=1,
                 bought_at="2026-05-01T10:00:00",
@@ -22,7 +22,8 @@ class TestReportGenerator(unittest.TestCase):
                 sell_price_received=125.0,
                 sell_currency="CNY",
                 sell_price_cny=125.0,
-                sold_at="2026-05-06T10:00:00"
+                sold_at="2026-05-06T10:00:00",
+                buy_source="c5",
             )
         ]
         
@@ -31,8 +32,8 @@ class TestReportGenerator(unittest.TestCase):
                 game="csgo",
                 name="Fracture Case",
                 name_zh="裂空武器箱",
-                buff_order_id="b3",
-                buff_order_no="bn3",
+                buy_order_id="b3",
+                buy_order_no="bn3",
                 buy_price_cny=5.0,
                 buy_quantity=1,
                 bought_at="2026-05-05T10:00:00"
@@ -44,8 +45,8 @@ class TestReportGenerator(unittest.TestCase):
                 game="csgo",
                 name="M4A4 | Tooth Fairy (Field-Tested)",
                 name_zh="M4A4 | 牙仙",
-                buff_order_id="b4",
-                buff_order_no="bn4",
+                buy_order_id="b4",
+                buy_order_no="bn4",
                 buy_price_cny=15.0,
                 buy_quantity=1,
                 bought_at="2026-05-05T11:00:00",
@@ -84,6 +85,7 @@ class TestReportGenerator(unittest.TestCase):
                 self.assertIn("M4A4 | 牙仙", content)
                 self.assertIn("其他账号交易", content)
                 self.assertIn("999999", content)
+                self.assertIn("C5", content)
                 
             # Export HTML
             html_file = reporter.export_html(matched_trades, unmatched_buys, summary, unmatched_other_buys)
@@ -100,6 +102,10 @@ class TestReportGenerator(unittest.TestCase):
                 self.assertIn("avg_roi", content)
                 self.assertIn("other_holdings", content)
                 self.assertIn("999999", content)
+                self.assertIn('"buy_source": "c5"', content)
+                self.assertIn("data-coverage-note", content)
+                self.assertIn("tab-count-holdings", content)
+                self.assertIn("empty-trades-notice", content)
 
     def test_view_csv(self):
         from io import StringIO
@@ -111,8 +117,8 @@ class TestReportGenerator(unittest.TestCase):
                 game="csgo",
                 name="AK-47 | Redline (Field-Tested)",
                 name_zh="AK-47 | 红线",
-                buff_order_id="b1",
-                buff_order_no="bn1",
+                buy_order_id="b1",
+                buy_order_no="bn1",
                 buy_price_cny=100.0,
                 buy_quantity=1,
                 bought_at="2026-05-01T10:00:00",
@@ -131,8 +137,8 @@ class TestReportGenerator(unittest.TestCase):
                 game="csgo",
                 name="Fracture Case",
                 name_zh="裂空武器箱",
-                buff_order_id="b3",
-                buff_order_no="bn3",
+                buy_order_id="b3",
+                buy_order_no="bn3",
                 buy_price_cny=5.0,
                 buy_quantity=1,
                 bought_at="2026-05-05T10:00:00"

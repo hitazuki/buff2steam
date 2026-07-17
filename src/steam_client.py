@@ -90,15 +90,19 @@ class SteamClient:
     # 公共接口
     # ------------------------------------------------------------------
 
-    def fetch_sell_history(self, cache_path: Path | None = None,
-                           fetch_count: int = 500) -> list[dict]:
+    def fetch_sell_history(
+        self,
+        cache_path: Path | None = None,
+        fetch_count: int = 500,
+        force_refresh: bool = False,
+    ) -> list[dict]:
         """
         拉取全部卖单历史
 
         Returns:
             卖单列表，每条记录格式见 `_parse_listing`
         """
-        if cache_path and cache_path.exists():
+        if cache_path and cache_path.exists() and not force_refresh:
             logger.info("[Steam] 读取缓存: %s", cache_path)
             with open(cache_path, encoding="utf-8") as f:
                 return json.load(f)
@@ -246,19 +250,27 @@ class SteamClient:
     def check_login(self) -> bool:
         """检查 Steam Cookie 是否有效"""
         try:
-            # 使用获取单条历史记录的 API 精准检测登录状态，规避主页面重定向或资格检查 (eligibilitycheck) 带来的误判
-            url = f"{self.BASE_URL}/market/myhistory/render/"
+            # 市场历史接口在未登录时也可能返回 success=true；直接检查 /my/
+            # 跳转到用户主页还是登录页，避免被缓存或 HTML 文本误判。
+            url = f"{self.BASE_URL}/my/"
             resp = self.session.get(
                 url,
-                params={"query": "", "start": 0, "count": 1},
-                timeout=10
+                timeout=10,
+                allow_redirects=False,
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                results_html = data.get("results_html", "")
-                if "login" not in results_html.lower():
-                    logger.info("[Steam] Cookie 验证通过")
-                    return True
+            location = resp.headers.get("Location", "").lower()
+            profile_targets = (
+                f"{self.BASE_URL}/profiles/",
+                f"{self.BASE_URL}/id/",
+                "/profiles/",
+                "/id/",
+            )
+            if (
+                resp.status_code in {301, 302, 303, 307, 308}
+                and location.startswith(profile_targets)
+            ):
+                logger.info("[Steam] Cookie 验证通过")
+                return True
             logger.error("[Steam] Cookie 无效或已过期")
             return False
         except Exception as e:

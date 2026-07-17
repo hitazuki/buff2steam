@@ -38,8 +38,8 @@ class ProfitCalculator:
     收益计算器
 
     计算公式：
-        净利润 = Steam到手价(CNY) - BUFF买入价(CNY)
-        ROI    = 净利润 / BUFF买入价 × 100%
+        净利润 = Steam到手价(CNY) - 买入价(CNY)
+        ROI    = 净利润 / 买入价 × 100%
         持仓天数 = (卖出时间 - 买入时间).days
 
     说明：

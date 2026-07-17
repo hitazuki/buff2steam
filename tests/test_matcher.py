@@ -144,6 +144,7 @@ class TestTransactionMatcher(unittest.TestCase):
                 "created_at": "2026-05-01T10:00:00",
                 "order_no": "no1",
                 "buyer_steamid": "12345",
+                "source": "c5",
             },
             {
                 "id": "buy2",
@@ -154,6 +155,7 @@ class TestTransactionMatcher(unittest.TestCase):
                 "created_at": "2026-05-02T10:00:00",
                 "order_no": "no2",
                 "buyer_steamid": "67890",
+                "source": "c5",
             },
             {
                 "id": "buy3",
@@ -164,6 +166,7 @@ class TestTransactionMatcher(unittest.TestCase):
                 "created_at": "2026-05-03T10:00:00",
                 "order_no": "no3",
                 "buyer_steamid": "",
+                "source": "c5",
             }
         ]
 
@@ -189,15 +192,18 @@ class TestTransactionMatcher(unittest.TestCase):
         # - unmatched_buys is empty because there are no active unmatched buys
         self.assertEqual(len(result.matched), 1)
         self.assertEqual(result.matched[0].buff_order_id, "buy1")
+        self.assertEqual(result.matched[0].buy_source, "c5")
 
         self.assertEqual(len(result.unmatched_buys), 0)
 
         self.assertEqual(len(result.unmatched_other_buys), 1)
         self.assertEqual(result.unmatched_other_buys[0].buff_order_id, "buy2")
         self.assertEqual(result.unmatched_other_buys[0].buyer_steamid, "67890")
+        self.assertEqual(result.unmatched_other_buys[0].buy_source, "c5")
 
         self.assertEqual(len(result.unmatched_no_steamid_buys), 1)
         self.assertEqual(result.unmatched_no_steamid_buys[0].buff_order_id, "buy3")
+        self.assertEqual(result.unmatched_no_steamid_buys[0].buy_source, "c5")
 
         # Case 2: No active Steam ID (Legacy single-account mode)
         result_legacy = matcher.match(buff_orders, steam_sales, current_steam_id="")
@@ -215,3 +221,28 @@ class TestTransactionMatcher(unittest.TestCase):
         
         self.assertEqual(len(result_legacy.unmatched_other_buys), 0)
         self.assertEqual(len(result_legacy.unmatched_no_steamid_buys), 0)
+
+    def test_cross_platform_fifo_uses_purchase_time(self):
+        buys = [
+            {
+                "id": "buff-newer", "source": "buff", "game": "csgo",
+                "name": "Fever Case", "price_cny": 20, "quantity": 1,
+                "created_at": "2026-06-02T10:00:00",
+            },
+            {
+                "id": "c5-older", "source": "c5", "game": "csgo",
+                "name": "Fever Case", "price_cny": 18, "quantity": 1,
+                "created_at": "2026-06-01T10:00:00",
+            },
+        ]
+        sales = [{
+            "id": "steam-sale", "game": "csgo", "name": "Fever Case",
+            "price_received": 25, "currency": "CNY",
+            "sold_at": "2026-06-03T10:00:00",
+        }]
+
+        result = TransactionMatcher().match(buys, sales)
+
+        self.assertEqual(result.matched[0].buy_order_id, "c5-older")
+        self.assertEqual(result.matched[0].buy_source, "c5")
+        self.assertEqual(result.unmatched_buys[0].buy_source, "buff")

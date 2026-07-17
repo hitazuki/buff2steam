@@ -45,10 +45,11 @@ GAME_LABEL = {
 def _group_trades(trades: list[MatchedTrade]) -> list[dict]:
     groups = {}
     for t in trades:
-        key = (t.game, t.name, round(t.buy_price_cny, 2), round(t.sell_price_cny, 2))
+        key = (t.buy_source, t.game, t.name, round(t.buy_price_cny, 2), round(t.sell_price_cny, 2))
         if key not in groups:
             groups[key] = {
                 "game": t.game,
+                "buy_source": t.buy_source,
                 "name": t.name,
                 "name_zh": t.name_zh,
                 "buy_price_cny": t.buy_price_cny,
@@ -91,6 +92,7 @@ def _group_trades(trades: list[MatchedTrade]) -> list[dict]:
 
         result.append({
             "game": g["game"],
+            "buy_source": g["buy_source"],
             "name": g["name"],
             "name_zh": g["name_zh"],
             "buy_price_cny": g["buy_price_cny"],
@@ -111,10 +113,11 @@ def _group_holdings(holdings: list[UnmatchedBuy]) -> list[dict]:
     groups = {}
     now = datetime.now()
     for b in holdings:
-        key = (b.game, b.name, round(b.buy_price_cny, 2))
+        key = (b.buy_source, b.game, b.name, round(b.buy_price_cny, 2))
         if key not in groups:
             groups[key] = {
                 "game": b.game,
+                "buy_source": b.buy_source,
                 "name": b.name,
                 "name_zh": b.name_zh,
                 "buy_price_cny": b.buy_price_cny,
@@ -147,6 +150,7 @@ def _group_holdings(holdings: list[UnmatchedBuy]) -> list[dict]:
 
         result.append({
             "game": g["game"],
+            "buy_source": g["buy_source"],
             "name": g["name"],
             "name_zh": g["name_zh"],
             "buy_price_cny": g["buy_price_cny"],
@@ -162,10 +166,11 @@ def _group_holdings(holdings: list[UnmatchedBuy]) -> list[dict]:
 def _group_other_buys(holdings: list[UnmatchedBuy]) -> list[dict]:
     groups = {}
     for b in holdings:
-        key = (b.game, b.name, round(b.buy_price_cny, 2), b.buyer_steamid)
+        key = (b.buy_source, b.game, b.name, round(b.buy_price_cny, 2), b.buyer_steamid)
         if key not in groups:
             groups[key] = {
                 "game": b.game,
+                "buy_source": b.buy_source,
                 "name": b.name,
                 "name_zh": b.name_zh,
                 "buy_price_cny": b.buy_price_cny,
@@ -191,6 +196,7 @@ def _group_other_buys(holdings: list[UnmatchedBuy]) -> list[dict]:
 
         result.append({
             "game": g["game"],
+            "buy_source": g["buy_source"],
             "name": g["name"],
             "name_zh": g["name_zh"],
             "buy_price_cny": g["buy_price_cny"],
@@ -206,10 +212,11 @@ def _group_other_buys(holdings: list[UnmatchedBuy]) -> list[dict]:
 def _group_no_steamid_buys(holdings: list[UnmatchedBuy]) -> list[dict]:
     groups = {}
     for b in holdings:
-        key = (b.game, b.name, round(b.buy_price_cny, 2))
+        key = (b.buy_source, b.game, b.name, round(b.buy_price_cny, 2))
         if key not in groups:
             groups[key] = {
                 "game": b.game,
+                "buy_source": b.buy_source,
                 "name": b.name,
                 "name_zh": b.name_zh,
                 "buy_price_cny": b.buy_price_cny,
@@ -234,6 +241,7 @@ def _group_no_steamid_buys(holdings: list[UnmatchedBuy]) -> list[dict]:
 
         result.append({
             "game": g["game"],
+            "buy_source": g["buy_source"],
             "name": g["name"],
             "name_zh": g["name_zh"],
             "buy_price_cny": g["buy_price_cny"],
@@ -303,11 +311,11 @@ class ReportGenerator:
             # 表头
             writer.writerow([
                 "状态", "游戏", "物品名称(英文)", "物品名称(中文)",
-                "BUFF买入价(CNY)", "买入时间",
+                "买入价(CNY)", "买入时间",
                 "Steam到手价(原币)", "原始货币", "Steam到手价(CNY)",
                 "卖出时间", "持仓天数",
                 "净利润(CNY)", "ROI(%)",
-                "BUFF订单号", "Steam记录ID", "买入SteamID",
+                "买入订单号", "Steam记录ID", "买入SteamID", "买入平台",
             ])
 
             # 已完成交易
@@ -326,9 +334,10 @@ class ReportGenerator:
                     t.hold_days,
                     f"{t.profit_cny:.2f}",
                     f"{t.roi_pct:.2f}",
-                    t.buff_order_no,
+                    t.buy_order_no,
                     t.steam_row_id,
                     "",
+                    t.buy_source.upper(),
                 ])
 
             # 持仓未售出
@@ -341,7 +350,7 @@ class ReportGenerator:
                     f"{b.buy_price_cny:.2f}",
                     b.bought_at[:10] if b.bought_at else "",
                     "-", "-", "-", "-", "-", "-", "-",
-                    b.buff_order_no, "-", b.buyer_steamid,
+                    b.buy_order_no, "-", b.buyer_steamid, b.buy_source.upper(),
                 ])
 
             # 其他账号交易
@@ -355,7 +364,7 @@ class ReportGenerator:
                         f"{b.buy_price_cny:.2f}",
                         b.bought_at[:10] if b.bought_at else "",
                         "-", "-", "-", "-", "-", "-", "-",
-                        b.buff_order_no, "-", b.buyer_steamid,
+                        b.buy_order_no, "-", b.buyer_steamid, b.buy_source.upper(),
                     ])
 
             # 缺失SteamID交易
@@ -369,7 +378,7 @@ class ReportGenerator:
                         f"{b.buy_price_cny:.2f}",
                         b.bought_at[:10] if b.bought_at else "",
                         "-", "-", "-", "-", "-", "-", "-",
-                        b.buff_order_no, "-", b.buyer_steamid,
+                        b.buy_order_no, "-", b.buyer_steamid, b.buy_source.upper(),
                     ])
 
             # 汇总行
@@ -381,7 +390,7 @@ class ReportGenerator:
                 "", f"{summary.avg_hold_days:.1f}",
                 f"{summary.total_profit_cny:.2f}",
                 f"{summary.avg_roi_pct:.2f}",
-                "", "", "",
+                "", "", "", "",
             ])
 
         logger.info("[Report] CSV 已导出：%s", csv_path)
@@ -482,6 +491,7 @@ class ReportGenerator:
         )
 
         table.add_column("游戏", style="dim", width=6, justify="center")
+        table.add_column("平台", style="cyan", width=6, justify="center")
         table.add_column("物品名称", min_width=20)
         table.add_column("数量", justify="center", width=6)
         table.add_column("买入单价\n(CNY)", justify="right", width=10)
@@ -512,6 +522,7 @@ class ReportGenerator:
 
             table.add_row(
                 GAME_LABEL.get(t['game'], t['game']),
+                t['buy_source'].upper(),
                 name_display,
                 str(t['count']),
                 f"¥{t['buy_price_cny']:.2f}",
@@ -541,6 +552,7 @@ class ReportGenerator:
         )
 
         table.add_column("游戏", style="dim", width=6, justify="center")
+        table.add_column("平台", style="cyan", width=6, justify="center")
         table.add_column("物品名称", min_width=25)
         table.add_column("数量", justify="center", width=6)
         table.add_column("买入单价 (CNY)", justify="right", width=14)
@@ -555,6 +567,7 @@ class ReportGenerator:
             color = "yellow" if isinstance(b["avg_hold_days"], int) and b["avg_hold_days"] > 30 else "white"
             table.add_row(
                 GAME_LABEL.get(b["game"], b["game"]),
+                b["buy_source"].upper(),
                 name_display,
                 str(b["count"]),
                 f"¥{b['buy_price_cny']:.2f}",
@@ -580,6 +593,7 @@ class ReportGenerator:
         )
 
         table.add_column("游戏", style="dim", width=6, justify="center")
+        table.add_column("平台", style="cyan", width=6, justify="center")
         table.add_column("物品名称", min_width=25)
         table.add_column("数量", justify="center", width=6)
         table.add_column("买入单价 (CNY)", justify="right", width=14)
@@ -593,6 +607,7 @@ class ReportGenerator:
 
             table.add_row(
                 GAME_LABEL.get(b["game"], b["game"]),
+                b["buy_source"].upper(),
                 name_display,
                 str(b["count"]),
                 f"¥{b['buy_price_cny']:.2f}",
@@ -618,6 +633,7 @@ class ReportGenerator:
         )
 
         table.add_column("游戏", style="dim", width=6, justify="center")
+        table.add_column("平台", style="cyan", width=6, justify="center")
         table.add_column("物品名称", min_width=25)
         table.add_column("数量", justify="center", width=6)
         table.add_column("买入单价 (CNY)", justify="right", width=14)
@@ -630,6 +646,7 @@ class ReportGenerator:
 
             table.add_row(
                 GAME_LABEL.get(b["game"], b["game"]),
+                b["buy_source"].upper(),
                 name_display,
                 str(b["count"]),
                 f"¥{b['buy_price_cny']:.2f}",
@@ -640,7 +657,7 @@ class ReportGenerator:
 
     def _print_unmatched_sells(self, sells: list[UnmatchedSell]) -> None:
         console.print(Panel(
-            f"[yellow]⚠ 发现 {len(sells)} 条 Steam 卖出记录无法匹配 BUFF 买单\n"
+            f"[yellow]⚠ 发现 {len(sells)} 条 Steam 卖出记录无法匹配买单\n"
             "[dim]可能为礼物收到的物品、其他渠道购入或数据缺失[/dim]",
             border_style="yellow",
             padding=(0, 2),
@@ -758,12 +775,14 @@ class ReportGenerator:
                     sell_t = t[9]
                     hold = int(t[10]) if t[10] and t[10] != "-" else 0
                     prof = float(t[11]) if t[11] else 0.0
+                    buy_source = t[16].upper() if len(t) > 16 and t[16] else "BUFF"
                 except (ValueError, IndexError):
                     continue
 
-                key = (game, name_en, round(buy_p, 2), round(sell_p, 2))
+                key = (buy_source, game, name_en, round(buy_p, 2), round(sell_p, 2))
                 if key not in g_trades:
                     g_trades[key] = {
+                        "buy_source": buy_source,
                         "game": game,
                         "name_en": name_en,
                         "name_zh": name_zh,
@@ -807,6 +826,7 @@ class ReportGenerator:
                 roi_pct = (gt["total_profit"] / total_buy * 100) if total_buy > 0 else 0.0
 
                 grouped_trades_list.append({
+                    "buy_source": gt["buy_source"],
                     "game": gt["game"],
                     "name_en": gt["name_en"],
                     "name_zh": gt["name_zh"],
@@ -834,15 +854,16 @@ class ReportGenerator:
                 expand=True,
             )
             table.add_column("游戏", style="dim", width=6, justify="center")
-            table.add_column("物品名称", min_width=20)
+            table.add_column("平台", width=5, justify="center")
+            table.add_column("物品名称", min_width=14, overflow="fold")
             table.add_column("数量", justify="center", width=6)
             table.add_column("买入单价\n(CNY)", justify="right", width=10)
             table.add_column("到手单价\n(CNY)", justify="right", width=10)
             table.add_column("总利润\n(CNY)", justify="right", width=10)
             table.add_column("ROI", justify="right", width=8)
             table.add_column("平均持仓\n天数", justify="center", width=8)
-            table.add_column("买入日期范围", justify="center", width=15)
-            table.add_column("卖出日期范围", justify="center", width=15)
+            table.add_column("买入日期范围", justify="center", width=11)
+            table.add_column("卖出日期范围", justify="center", width=11)
 
             for t in display_trades:
                 profit_str = f"¥{t['total_profit']:.2f}"
@@ -864,6 +885,7 @@ class ReportGenerator:
 
                 table.add_row(
                     t['game'],
+                    t['buy_source'],
                     name_display,
                     str(t['count']),
                     f"¥{t['buy_price']:.2f}",
@@ -892,12 +914,14 @@ class ReportGenerator:
                     name_zh = b[3]
                     buy_p = float(b[4]) if b[4] else 0.0
                     buy_t = b[5]
+                    buy_source = b[16].upper() if len(b) > 16 and b[16] else "BUFF"
                 except (ValueError, IndexError):
                     continue
 
-                key = (game, name_en, round(buy_p, 2))
+                key = (buy_source, game, name_en, round(buy_p, 2))
                 if key not in g_holdings:
                     g_holdings[key] = {
+                        "buy_source": buy_source,
                         "game": game,
                         "name_en": name_en,
                         "name_zh": name_zh,
@@ -930,6 +954,7 @@ class ReportGenerator:
                 avg_hold = round(sum(gh["hold_days_list"]) / len(gh["hold_days_list"])) if gh["hold_days_list"] else "-"
 
                 grouped_holdings_list.append({
+                    "buy_source": gh["buy_source"],
                     "game": gh["game"],
                     "name_en": gh["name_en"],
                     "name_zh": gh["name_zh"],
@@ -953,6 +978,7 @@ class ReportGenerator:
                 expand=True,
             )
             table_h.add_column("游戏", style="dim", width=6, justify="center")
+            table_h.add_column("平台", width=6, justify="center")
             table_h.add_column("物品名称", min_width=25)
             table_h.add_column("数量", justify="center", width=6)
             table_h.add_column("买入单价 (CNY)", justify="right", width=14)
@@ -967,6 +993,7 @@ class ReportGenerator:
                 color = "yellow" if isinstance(b["avg_hold_days"], int) and b["avg_hold_days"] > 30 else "white"
                 table_h.add_row(
                     b['game'],
+                    b['buy_source'],
                     name_display,
                     str(b['count']),
                     f"¥{b['buy_price']:.2f}",
@@ -989,12 +1016,14 @@ class ReportGenerator:
                     buy_p = float(b[4]) if b[4] else 0.0
                     buy_t = b[5]
                     buyer_steamid = b[15] if len(b) > 15 else ""
+                    buy_source = b[16].upper() if len(b) > 16 and b[16] else "BUFF"
                 except (ValueError, IndexError):
                     continue
 
-                key = (game, name_en, round(buy_p, 2), buyer_steamid)
+                key = (buy_source, game, name_en, round(buy_p, 2), buyer_steamid)
                 if key not in g_other:
                     g_other[key] = {
+                        "buy_source": buy_source,
                         "game": game,
                         "name_en": name_en,
                         "name_zh": name_zh,
@@ -1020,6 +1049,7 @@ class ReportGenerator:
                     earliest_b = ""
 
                 grouped_other_list.append({
+                    "buy_source": go["buy_source"],
                     "game": go["game"],
                     "name_en": go["name_en"],
                     "name_zh": go["name_zh"],
@@ -1043,6 +1073,7 @@ class ReportGenerator:
                 expand=True,
             )
             table_o.add_column("游戏", style="dim", width=6, justify="center")
+            table_o.add_column("平台", width=6, justify="center")
             table_o.add_column("物品名称", min_width=25)
             table_o.add_column("数量", justify="center", width=6)
             table_o.add_column("买入单价 (CNY)", justify="right", width=14)
@@ -1056,6 +1087,7 @@ class ReportGenerator:
 
                 table_o.add_row(
                     b['game'],
+                    b['buy_source'],
                     name_display,
                     str(b['count']),
                     f"¥{b['buy_price']:.2f}",
@@ -1077,12 +1109,14 @@ class ReportGenerator:
                     name_zh = b[3]
                     buy_p = float(b[4]) if b[4] else 0.0
                     buy_t = b[5]
+                    buy_source = b[16].upper() if len(b) > 16 and b[16] else "BUFF"
                 except (ValueError, IndexError):
                     continue
 
-                key = (game, name_en, round(buy_p, 2))
+                key = (buy_source, game, name_en, round(buy_p, 2))
                 if key not in g_no_steamid:
                     g_no_steamid[key] = {
+                        "buy_source": buy_source,
                         "game": game,
                         "name_en": name_en,
                         "name_zh": name_zh,
@@ -1107,6 +1141,7 @@ class ReportGenerator:
                     earliest_b = ""
 
                 grouped_no_steamid_list.append({
+                    "buy_source": gns["buy_source"],
                     "game": gns["game"],
                     "name_en": gns["name_en"],
                     "name_zh": gns["name_zh"],
@@ -1129,6 +1164,7 @@ class ReportGenerator:
                 expand=True,
             )
             table_ns.add_column("游戏", style="dim", width=6, justify="center")
+            table_ns.add_column("平台", width=6, justify="center")
             table_ns.add_column("物品名称", min_width=25)
             table_ns.add_column("数量", justify="center", width=6)
             table_ns.add_column("买入单价 (CNY)", justify="right", width=14)
@@ -1141,6 +1177,7 @@ class ReportGenerator:
 
                 table_ns.add_row(
                     b['game'],
+                    b['buy_source'],
                     name_display,
                     str(b['count']),
                     f"¥{b['buy_price']:.2f}",

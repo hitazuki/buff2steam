@@ -70,7 +70,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <h1 class="text-xl sm:text-2xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
                         Steam 挂刀收益分析看板
                     </h1>
-                    <p class="text-xs text-slate-400">BUFF 买单 × Steam 卖单 (FIFO 先进先出自动对账系统)</p>
+                    <p class="text-xs text-slate-400">BUFF/C5 买单 × Steam 卖单 (FIFO 先进先出自动对账系统)</p>
                 </div>
             </div>
             <div class="flex items-center gap-3">
@@ -156,6 +156,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </section>
 
         <!-- 图表网格 -->
+        <div id="empty-trades-notice" class="hidden rounded-xl border border-amber-500/20 bg-amber-500/5 px-5 py-3 text-sm text-amber-200">
+            当前没有可与本 Steam 账号买单匹配的卖出记录，因此收益图表为空；买入记录仍完整保留在下方各分类标签中。
+        </div>
+
         <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <!-- 累计收益趋势线图 -->
             <div class="glass rounded-2xl p-6 lg:col-span-2 space-y-4">
@@ -190,22 +194,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         <!-- 数据表格与分类选项卡 -->
         <section class="glass rounded-2xl overflow-hidden shadow-2xl">
+            <div id="data-coverage-note" class="px-6 py-3 border-b border-slate-800/60 bg-indigo-500/5 text-xs text-slate-300"></div>
             <!-- 标签页选择器与搜索过滤 -->
             <div class="p-6 border-b border-slate-800/60 space-y-4">
                 <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                     <!-- Tab Buttons -->
-                    <div class="flex rounded-xl bg-slate-950 p-1 border border-slate-800">
+                    <div class="flex flex-wrap rounded-xl bg-slate-950 p-1 border border-slate-800">
                         <button id="tab-btn-trades" onclick="switchTab('trades')" class="px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 bg-slate-800 text-white shadow">
-                            ✅ 已完成交易明细
+                            ✅ 已完成交易明细 <span id="tab-count-trades" class="font-display text-xs">(0)</span>
                         </button>
                         <button id="tab-btn-holdings" onclick="switchTab('holdings')" class="px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 text-slate-400 hover:text-slate-200">
-                            📦 当前持有持仓
+                            📦 当前持有持仓 <span id="tab-count-holdings" class="font-display text-xs">(0)</span>
                         </button>
                         <button id="tab-btn-other-holdings" onclick="switchTab('other-holdings')" class="px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 text-slate-400 hover:text-slate-200">
-                            🔌 其他账号买单
+                            🔌 其他账号买单 <span id="tab-count-other" class="font-display text-xs">(0)</span>
                         </button>
                         <button id="tab-btn-no-steamid" onclick="switchTab('no-steamid')" class="px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 text-slate-400 hover:text-slate-200">
-                            ❔ 缺失SteamID交易
+                            ❔ 缺失SteamID交易 <span id="tab-count-missing" class="font-display text-xs">(0)</span>
                         </button>
                     </div>
 
@@ -282,7 +287,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <script>
         const RAW_DATA = JSON.parse(document.getElementById('dashboard-raw-data').textContent);
         
-        let currentTab = 'trades';
+        let currentTab = RAW_DATA.trades.length > 0
+            ? 'trades'
+            : (RAW_DATA.holdings.length > 0
+                ? 'holdings'
+                : ((RAW_DATA.other_holdings || []).length > 0
+                    ? 'other-holdings'
+                    : 'no-steamid'));
         let filteredTrades = [...RAW_DATA.trades];
         let filteredHoldings = [...RAW_DATA.holdings];
         let filteredOtherHoldings = [...(RAW_DATA.other_holdings || [])];
@@ -315,9 +326,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function groupTrades(tradesList) {
             const groups = {};
             tradesList.forEach(t => {
-                const key = `${t.game}|${t.name}|${t.buy_price.toFixed(2)}|${t.sell_price_cny.toFixed(2)}`;
+                const key = `${t.buy_source}|${t.game}|${t.name}|${t.buy_price.toFixed(2)}|${t.sell_price_cny.toFixed(2)}`;
                 if (!groups[key]) {
                     groups[key] = {
+                        buy_source: t.buy_source,
                         game: t.game,
                         name: t.name,
                         name_zh: t.name_zh,
@@ -361,6 +373,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const roi = total_buy > 0 ? (g.profit / total_buy) * 100 : 0;
 
                 return {
+                    buy_source: g.buy_source,
                     game: g.game,
                     name: g.name,
                     name_zh: g.name_zh,
@@ -383,9 +396,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function groupHoldings(holdingsList) {
             const groups = {};
             holdingsList.forEach(h => {
-                const key = `${h.game}|${h.name}|${h.buy_price.toFixed(2)}`;
+                const key = `${h.buy_source}|${h.game}|${h.name}|${h.buy_price.toFixed(2)}`;
                 if (!groups[key]) {
                     groups[key] = {
+                        buy_source: h.buy_source,
                         game: h.game,
                         name: h.name,
                         name_zh: h.name_zh,
@@ -418,6 +432,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const earliest_bought_at = g.bought_at_list.length > 0 ? g.bought_at_list.sort()[0] : '';
 
                 return {
+                    buy_source: g.buy_source,
                     game: g.game,
                     name: g.name,
                     name_zh: g.name_zh,
@@ -433,9 +448,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function groupOtherHoldings(otherList) {
             const groups = {};
             otherList.forEach(o => {
-                const key = `${o.game}|${o.name}|${o.buy_price.toFixed(2)}|${o.buyer_steamid || ''}`;
+                const key = `${o.buy_source}|${o.game}|${o.name}|${o.buy_price.toFixed(2)}|${o.buyer_steamid || ''}`;
                 if (!groups[key]) {
                     groups[key] = {
+                        buy_source: o.buy_source,
                         game: o.game,
                         name: o.name,
                         name_zh: o.name_zh,
@@ -459,6 +475,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const earliest_bought_at = g.bought_at_list.length > 0 ? g.bought_at_list.sort()[0] : '';
 
                 return {
+                    buy_source: g.buy_source,
                     game: g.game,
                     name: g.name,
                     name_zh: g.name_zh,
@@ -474,9 +491,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function groupNoSteamid(noSteamidList) {
             const groups = {};
             noSteamidList.forEach(o => {
-                const key = `${o.game}|${o.name}|${o.buy_price.toFixed(2)}`;
+                const key = `${o.buy_source}|${o.game}|${o.name}|${o.buy_price.toFixed(2)}`;
                 if (!groups[key]) {
                     groups[key] = {
+                        buy_source: o.buy_source,
                         game: o.game,
                         name: o.name,
                         name_zh: o.name_zh,
@@ -499,6 +517,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const earliest_bought_at = g.bought_at_list.length > 0 ? g.bought_at_list.sort()[0] : '';
 
                 return {
+                    buy_source: g.buy_source,
                     game: g.game,
                     name: g.name,
                     name_zh: g.name_zh,
@@ -514,7 +533,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function initDashboard() {
             renderSummaryCards();
             renderCharts();
-            handleFilter();
+            renderDataCoverage();
+            switchTab(currentTab);
+        }
+
+        function renderDataCoverage() {
+            const counts = {
+                trades: RAW_DATA.trades.length,
+                holdings: RAW_DATA.holdings.length,
+                other: (RAW_DATA.other_holdings || []).length,
+                missing: (RAW_DATA.no_steamid_holdings || []).length,
+            };
+            const totalBuys = counts.trades + counts.holdings + counts.other + counts.missing;
+            document.getElementById('tab-count-trades').textContent = `(${counts.trades})`;
+            document.getElementById('tab-count-holdings').textContent = `(${counts.holdings})`;
+            document.getElementById('tab-count-other').textContent = `(${counts.other})`;
+            document.getElementById('tab-count-missing').textContent = `(${counts.missing})`;
+            document.getElementById('data-coverage-note').textContent =
+                `已载入 ${totalBuys} 条买入明细：当前账号 ${counts.holdings + counts.trades} 条，` +
+                `其他账号 ${counts.other} 条，缺失 SteamID ${counts.missing} 条。` +
+                `表格按饰品、平台和价格合并，每页显示 ${pageSize} 组，可使用下方分页查看全部。`;
+            if (counts.trades === 0) {
+                document.getElementById('empty-trades-notice').classList.remove('hidden');
+            }
         }
 
         // 渲染统计卡片
@@ -744,6 +785,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const tableHeaders = document.getElementById('table-headers');
             tableHeaders.innerHTML = `
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('game')">游戏 ${getSortArrow('game')}</th>
+                <th class="py-3.5 px-4">买入平台</th>
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('name')">饰品名称 ${getSortArrow('name')}</th>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('buy_price')">买入单价 ${getSortArrow('buy_price')}</th>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('sell_price_cny')">到手单价 ${getSortArrow('sell_price_cny')}</th>
@@ -761,7 +803,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('total-count-display').textContent = `${rawTotal} 条明细 (${total} 组)`;
 
             if (total === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" class="text-center py-12 text-slate-500">无已完成交易数据</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" class="text-center py-12 text-slate-500">无已完成交易数据</td></tr>`;
                 updatePagination(0, 0);
                 return;
             }
@@ -790,6 +832,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <td class="py-3 px-4">
                         <span class="text-xs px-2 py-0.5 rounded-full font-medium ${gameBadge}">${gameName}</span>
                     </td>
+                    <td class="py-3 px-4 text-xs font-semibold text-indigo-300">${(t.buy_source || 'buff').toUpperCase()}</td>
                     <td class="py-3 px-4 max-w-[280px] truncate">
                         <div class="flex items-center font-medium text-slate-200">
                             <span class="truncate">${t.name_zh || t.name}</span>
@@ -824,6 +867,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const tableHeaders = document.getElementById('table-headers');
             tableHeaders.innerHTML = `
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('game')">游戏 ${getSortArrow('game')}</th>
+                <th class="py-3.5 px-4">买入平台</th>
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('name')">饰品名称 ${getSortArrow('name')}</th>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('buy_price')">买入单价 ${getSortArrow('buy_price')}</th>
                 <th class="py-3.5 px-4 text-center cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('bought_at')">买入日期范围 ${getSortArrow('bought_at')}</th>
@@ -838,7 +882,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('total-count-display').textContent = `${rawTotal} 条明细 (${total} 组)`;
 
             if (total === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" class="text-center py-12 text-slate-500">当前没有持仓物品</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" class="text-center py-12 text-slate-500">当前没有持仓物品</td></tr>`;
                 updatePagination(0, 0);
                 return;
             }
@@ -865,6 +909,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <td class="py-3.5 px-4">
                         <span class="text-xs px-2 py-0.5 rounded-full font-medium ${gameBadge}">${gameName}</span>
                     </td>
+                    <td class="py-3.5 px-4 text-xs font-semibold text-indigo-300">${(h.buy_source || 'buff').toUpperCase()}</td>
                     <td class="py-3.5 px-4">
                         <div class="flex items-center font-medium text-slate-200">
                             <span class="truncate">${h.name_zh || h.name}</span>
@@ -890,6 +935,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const tableHeaders = document.getElementById('table-headers');
             tableHeaders.innerHTML = `
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('game')">游戏 ${getSortArrow('game')}</th>
+                <th class="py-3.5 px-4">买入平台</th>
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('name')">饰品名称 ${getSortArrow('name')}</th>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('buy_price')">买入单价 ${getSortArrow('buy_price')}</th>
                 <th class="py-3.5 px-4 text-center cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('bought_at')">买入日期范围 ${getSortArrow('bought_at')}</th>
@@ -904,7 +950,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('total-count-display').textContent = `${rawTotal} 条明细 (${total} 组)`;
 
             if (total === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" class="text-center py-12 text-slate-500">没有其他账号的买单数据</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" class="text-center py-12 text-slate-500">没有其他账号的买单数据</td></tr>`;
                 updatePagination(0, 0);
                 return;
             }
@@ -931,6 +977,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <td class="py-3.5 px-4">
                         <span class="text-xs px-2 py-0.5 rounded-full font-medium ${gameBadge}">${gameName}</span>
                     </td>
+                    <td class="py-3.5 px-4 text-xs font-semibold text-indigo-300">${(h.buy_source || 'buff').toUpperCase()}</td>
                     <td class="py-3.5 px-4">
                         <div class="flex items-center font-medium text-slate-200">
                             <span class="truncate">${h.name_zh || h.name}</span>
@@ -956,6 +1003,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const tableHeaders = document.getElementById('table-headers');
             tableHeaders.innerHTML = `
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('game')">游戏 ${getSortArrow('game')}</th>
+                <th class="py-3.5 px-4">买入平台</th>
                 <th class="py-3.5 px-4 cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('name')">饰品名称 ${getSortArrow('name')}</th>
                 <th class="py-3.5 px-4 text-right cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('buy_price')">买入单价 ${getSortArrow('buy_price')}</th>
                 <th class="py-3.5 px-4 text-center cursor-pointer hover:bg-slate-900 transition-colors" onclick="triggerSort('bought_at')">买入日期范围 ${getSortArrow('bought_at')}</th>
@@ -969,7 +1017,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('total-count-display').textContent = `${rawTotal} 条明细 (${total} 组)`;
 
             if (total === 0) {
-                tbody.innerHTML = `<tr><td colspan="4" class="text-center py-12 text-slate-500">没有缺失SteamID的买单数据</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="5" class="text-center py-12 text-slate-500">没有缺失SteamID的买单数据</td></tr>`;
                 updatePagination(0, 0);
                 return;
             }
@@ -996,6 +1044,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <td class="py-3.5 px-4">
                         <span class="text-xs px-2 py-0.5 rounded-full font-medium ${gameBadge}">${gameName}</span>
                     </td>
+                    <td class="py-3.5 px-4 text-xs font-semibold text-indigo-300">${(h.buy_source || 'buff').toUpperCase()}</td>
                     <td class="py-3.5 px-4">
                         <div class="flex items-center font-medium text-slate-200">
                             <span class="truncate">${h.name_zh || h.name}</span>
@@ -1188,6 +1237,7 @@ def generate_html_report(trades: list, unmatched_buys: list, summary, output_pat
     trades_list = []
     for t in trades:
         trades_list.append({
+            "buy_source": t.buy_source,
             "game": t.game,
             "name": t.name,
             "name_zh": t.name_zh,
@@ -1200,31 +1250,36 @@ def generate_html_report(trades: list, unmatched_buys: list, summary, output_pat
             "hold_days": t.hold_days,
             "profit": t.profit_cny,
             "roi": t.roi_pct,
-            "buff_no": t.buff_order_no,
+            "buy_no": t.buy_order_no,
+            "buff_no": t.buy_order_no,
             "steam_id": t.steam_row_id,
         })
 
     holdings_list = []
     for b in unmatched_buys:
         holdings_list.append({
+            "buy_source": b.buy_source,
             "game": b.game,
             "name": b.name,
             "name_zh": b.name_zh,
             "buy_price": b.buy_price_cny,
             "bought_at": b.bought_at,
-            "buff_no": b.buff_order_no,
+            "buy_no": b.buy_order_no,
+            "buff_no": b.buy_order_no,
         })
 
     other_holdings_list = []
     if unmatched_other_buys:
         for b in unmatched_other_buys:
             other_holdings_list.append({
+                "buy_source": b.buy_source,
                 "game": b.game,
                 "name": b.name,
                 "name_zh": b.name_zh,
                 "buy_price": b.buy_price_cny,
                 "bought_at": b.bought_at,
-                "buff_no": b.buff_order_no,
+                "buy_no": b.buy_order_no,
+                "buff_no": b.buy_order_no,
                 "buyer_steamid": b.buyer_steamid,
             })
 
@@ -1232,12 +1287,14 @@ def generate_html_report(trades: list, unmatched_buys: list, summary, output_pat
     if unmatched_no_steamid_buys:
         for b in unmatched_no_steamid_buys:
             no_steamid_holdings_list.append({
+                "buy_source": b.buy_source,
                 "game": b.game,
                 "name": b.name,
                 "name_zh": b.name_zh,
                 "buy_price": b.buy_price_cny,
                 "bought_at": b.bought_at,
-                "buff_no": b.buff_order_no,
+                "buy_no": b.buy_order_no,
+                "buff_no": b.buy_order_no,
             })
 
     best_trade = None

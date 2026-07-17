@@ -1,7 +1,4 @@
-"""
-交易记录匹配模块
-将 BUFF 买单与 Steam 卖单按物品名称 + FIFO 策略配对
-"""
+"""将多平台买单与 Steam 卖单按游戏、物品名称和 FIFO 策略配对。"""
 from __future__ import annotations
 
 import logging
@@ -19,10 +16,10 @@ class MatchedTrade:
     name: str                   # 物品名称（market_hash_name）
     name_zh: str                # 中文名（若有）
 
-    # 买入信息（BUFF）
-    buff_order_id: str
-    buff_order_no: str
-    buy_price_cny: float        # BUFF 买入价（CNY）
+    # 买入信息（BUFF / C5）
+    buy_order_id: str
+    buy_order_no: str
+    buy_price_cny: float
     buy_quantity: int
     bought_at: str              # ISO 格式时间
 
@@ -33,10 +30,21 @@ class MatchedTrade:
     sell_price_cny: float       # Steam 到手价换算为 CNY
     sold_at: str                # ISO 格式时间
 
+    buy_source: str = "buff"
+
     # 收益计算（由 profit_calculator 填充）
     profit_cny: float = 0.0
     roi_pct: float = 0.0
     hold_days: int = 0
+
+    @property
+    def buff_order_id(self) -> str:
+        """旧字段只读别名，兼容已有调用方。"""
+        return self.buy_order_id
+
+    @property
+    def buff_order_no(self) -> str:
+        return self.buy_order_no
 
 
 @dataclass
@@ -45,17 +53,26 @@ class UnmatchedBuy:
     game: str
     name: str
     name_zh: str
-    buff_order_id: str
-    buff_order_no: str
+    buy_order_id: str
+    buy_order_no: str
     buy_price_cny: float
     buy_quantity: int
     bought_at: str
     buyer_steamid: str = ""
+    buy_source: str = "buff"
+
+    @property
+    def buff_order_id(self) -> str:
+        return self.buy_order_id
+
+    @property
+    def buff_order_no(self) -> str:
+        return self.buy_order_no
 
 
 @dataclass
 class UnmatchedSell:
-    """已卖出但找不到对应 BUFF 买单（可能为礼物/其他来源）"""
+    """已卖出但找不到对应买单（可能为礼物/其他来源）"""
     game: str
     name: str
     steam_row_id: str
@@ -77,7 +94,7 @@ class MatchResult:
 
 class TransactionMatcher:
     """
-    BUFF 买单 × Steam 卖单 FIFO 匹配器
+    多平台买单 × Steam 卖单 FIFO 匹配器
 
     匹配规则：
     - 按物品名称（market_hash_name）分组
@@ -86,7 +103,7 @@ class TransactionMatcher:
     - 剩余未配对的记录归入 unmatched 列表
 
     注意：
-    - BUFF 买单中的 quantity 字段可能 > 1（批量购买），目前简化处理：
+    - 买单中的 quantity 字段可能 > 1（批量购买），目前简化处理：
       quantity > 1 时将该买单拆分为多个单独记录参与 FIFO
     """
 
@@ -107,7 +124,7 @@ class TransactionMatcher:
         执行 FIFO 匹配
 
         Args:
-            buff_orders: buff_client 返回的买单列表
+            buff_orders: BUFF/C5 客户端返回的通用买单列表
             steam_sales: steam_client 返回的卖单列表
             current_steam_id: 当前登录的 SteamID64 字符串。若不为空，则将不同 SteamID 的买单划分至 unmatched_other_buys。
 
@@ -128,12 +145,13 @@ class TransactionMatcher:
                             game=o.get("game", "unknown"),
                             name=o.get("name", ""),
                             name_zh=o.get("name_zh", ""),
-                            buff_order_id=o.get("id", ""),
-                            buff_order_no=o.get("order_no", ""),
+                            buy_order_id=o.get("id", ""),
+                            buy_order_no=o.get("order_no", ""),
                             buy_price_cny=float(o.get("price_cny", 0)),
                             buy_quantity=1,
                             bought_at=o.get("created_at", ""),
                             buyer_steamid="",
+                            buy_source=o.get("source", "buff"),
                         ))
                 elif buyer_id != current_steam_id:
                     qty = int(o.get("quantity", 1))
@@ -142,12 +160,13 @@ class TransactionMatcher:
                             game=o.get("game", "unknown"),
                             name=o.get("name", ""),
                             name_zh=o.get("name_zh", ""),
-                            buff_order_id=o.get("id", ""),
-                            buff_order_no=o.get("order_no", ""),
+                            buy_order_id=o.get("id", ""),
+                            buy_order_no=o.get("order_no", ""),
                             buy_price_cny=float(o.get("price_cny", 0)),
                             buy_quantity=1,
                             bought_at=o.get("created_at", ""),
                             buyer_steamid=buyer_id,
+                            buy_source=o.get("source", "buff"),
                         ))
                 else:
                     matching_buff_orders.append(o)
@@ -158,10 +177,10 @@ class TransactionMatcher:
         valid_buys = [o for o in matching_buff_orders if o.get("name")]
         valid_sells = [s for s in steam_sales if s.get("name")]
 
-        # 按物品名称分组（忽略大小写，trim空格）
+        # 按游戏 + 物品名称分组（忽略名称大小写，trim空格）
         buy_groups: dict[str, list[dict]] = defaultdict(list)
         for order in valid_buys:
-            key = self._normalize_name(order["name"])
+            key = self._group_key(order)
             # 拆分 quantity > 1 的批量订单
             qty = int(order.get("quantity", 1))
             for _ in range(qty):
@@ -169,7 +188,7 @@ class TransactionMatcher:
 
         sell_groups: dict[str, list[dict]] = defaultdict(list)
         for sale in valid_sells:
-            key = self._normalize_name(sale["name"])
+            key = self._group_key(sale)
             sell_groups[key].append(sale)
 
         # 对每组按时间升序排序
@@ -193,8 +212,8 @@ class TransactionMatcher:
                     game=buy.get("game", sell.get("game", "unknown")),
                     name=buy.get("name", ""),
                     name_zh=buy.get("name_zh", ""),
-                    buff_order_id=buy.get("id", ""),
-                    buff_order_no=buy.get("order_no", ""),
+                    buy_order_id=buy.get("id", ""),
+                    buy_order_no=buy.get("order_no", ""),
                     buy_price_cny=float(buy.get("price_cny", 0)),
                     buy_quantity=1,
                     bought_at=buy.get("created_at", ""),
@@ -203,6 +222,7 @@ class TransactionMatcher:
                     sell_currency=sell.get("currency", "CNY"),
                     sell_price_cny=sell_price_cny,
                     sold_at=sell.get("sold_at", ""),
+                    buy_source=buy.get("source", "buff"),
                 )
                 result.matched.append(matched)
                 bi += 1
@@ -214,12 +234,13 @@ class TransactionMatcher:
                     game=buy.get("game", "unknown"),
                     name=buy.get("name", ""),
                     name_zh=buy.get("name_zh", ""),
-                    buff_order_id=buy.get("id", ""),
-                    buff_order_no=buy.get("order_no", ""),
+                    buy_order_id=buy.get("id", ""),
+                    buy_order_no=buy.get("order_no", ""),
                     buy_price_cny=float(buy.get("price_cny", 0)),
                     buy_quantity=1,
                     bought_at=buy.get("created_at", ""),
                     buyer_steamid=buy.get("buyer_steamid", ""),
+                    buy_source=buy.get("source", "buff"),
                 ))
 
             # 未配对卖单
@@ -259,3 +280,7 @@ class TransactionMatcher:
     def _normalize_name(name: str) -> str:
         """标准化物品名称用于分组（小写 + 去首尾空格）"""
         return name.strip().lower()
+
+    @classmethod
+    def _group_key(cls, record: dict) -> str:
+        return f"{record.get('game', 'unknown')}|{cls._normalize_name(record.get('name', ''))}"
