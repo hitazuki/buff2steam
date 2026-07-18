@@ -32,10 +32,12 @@ class CurrencyConverter:
 
     def __init__(self, fallback_rates: dict[str, float],
                  cache_path: Path | None = None,
-                 cache_ttl_hours: float = 6.0):
+                 cache_ttl_hours: float = 6.0,
+                 allow_online: bool = True):
         self.fallback_rates = fallback_rates
         self.cache_path = cache_path
         self.cache_ttl_seconds = cache_ttl_hours * 3600
+        self.allow_online = allow_online
         self._rates: dict[str, float] = {}  # 货币代码 → 相对于 CNY 的汇率（1 外币 = ? CNY）
         self._loaded = False
 
@@ -81,7 +83,9 @@ class CurrencyConverter:
     def _load_rates(self) -> None:
         """加载汇率，优先使用缓存"""
         # 1. 尝试读取有效缓存
-        if self.cache_path and self._is_cache_valid():
+        if self.cache_path and self.cache_path.exists() and (
+            self._is_cache_valid() or not self.allow_online
+        ):
             try:
                 with open(self.cache_path, encoding="utf-8") as f:
                     cached = json.load(f)
@@ -91,15 +95,19 @@ class CurrencyConverter:
             except Exception as e:
                 logger.warning("[Currency] 读取汇率缓存失败: %s", e)
 
-        # 2. 从在线 API 获取
-        rates = self._fetch_online_rates()
-        if rates:
-            self._rates = rates
-            self._save_cache(rates)
-            return
+        # 2. 从在线 API 获取（离线报告模式不访问网络）
+        if self.allow_online:
+            rates = self._fetch_online_rates()
+            if rates:
+                self._rates = rates
+                self._save_cache(rates)
+                return
 
         # 3. 使用配置备用汇率
-        logger.warning("[Currency] 在线汇率获取失败，使用配置备用汇率")
+        if self.allow_online:
+            logger.warning("[Currency] 在线汇率获取失败，使用配置备用汇率")
+        else:
+            logger.info("[Currency] 离线模式使用配置备用汇率")
         self._rates = {k: v for k, v in self.fallback_rates.items()}
 
     def _fetch_online_rates(self) -> dict[str, float] | None:

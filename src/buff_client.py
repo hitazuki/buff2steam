@@ -58,6 +58,7 @@ class BuffClient:
         game: str,
         cache_path: Path | None = None,
         force_refresh: bool = False,
+        incremental: bool = False,
     ) -> list[dict]:
         """
         拉取指定游戏的全部买单历史
@@ -71,25 +72,49 @@ class BuffClient:
         """
         game = GAME_IDS.get(game, game)
 
+        cached_orders: list[dict] = []
         if cache_path and cache_path.exists() and not force_refresh:
             logger.info("[BUFF] 读取缓存: %s", cache_path)
             with open(cache_path, encoding="utf-8") as f:
-                return json.load(f)
+                cached_orders = json.load(f)
+            if not force_refresh and not incremental:
+                return cached_orders
+
+        cached_ids = {
+            str(order.get("id", ""))
+            for order in cached_orders
+            if order.get("id")
+        }
 
         logger.info("[BUFF] 开始拉取 %s 买单历史...", game)
         orders: list[dict] = []
 
         for page in range(1, self.max_pages + 1):
             page_orders, has_more = self._fetch_page(game, page)
-            orders.extend(page_orders)
+            reached_cache = False
+            for order in page_orders:
+                if incremental and str(order.get("id", "")) in cached_ids:
+                    reached_cache = True
+                    break
+                orders.append(order)
             logger.info("[BUFF] %s 第 %d 页，获取 %d 条，累计 %d 条",
                         game, page, len(page_orders), len(orders))
 
-            if not has_more:
+            if reached_cache or not has_more:
                 break
             time.sleep(1.0)  # 礼貌性延迟，避免触发频率限制
 
-        logger.info("[BUFF] %s 买单历史拉取完成，共 %d 条", game, len(orders))
+        if incremental and cached_orders:
+            new_count = len(orders)
+            orders = self._merge_orders(orders, cached_orders)
+            logger.info(
+                "[BUFF] %s 增量拉取完成，新增 %d 条，合并后 %d 条",
+                game,
+                new_count,
+                len(orders),
+            )
+        else:
+            logger.info("[BUFF] %s 买单历史拉取完成，共 %d 条", game, len(orders))
 
         if cache_path:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +123,20 @@ class BuffClient:
             logger.info("[BUFF] 已缓存到 %s", cache_path)
 
         return orders
+
+    @staticmethod
+    def _merge_orders(new_orders: list[dict], cached_orders: list[dict]) -> list[dict]:
+        """按记录 ID 合并，保留接口返回的从新到旧顺序。"""
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for order in [*new_orders, *cached_orders]:
+            record_id = str(order.get("id", ""))
+            if record_id and record_id in seen:
+                continue
+            if record_id:
+                seen.add(record_id)
+            merged.append(order)
+        return merged
 
     # ------------------------------------------------------------------
     # 内部方法

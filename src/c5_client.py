@@ -101,8 +101,10 @@ class C5Client:
         games: Iterable[str] = ("csgo", "dota2"),
         cache_path: Path | None = None,
         force_refresh: bool = False,
+        incremental: bool = False,
     ) -> list[dict]:
         """拉取所有指定游戏的成功买单；失败时不写入不完整缓存。"""
+        cached: list[dict] = []
         if cache_path and cache_path.exists() and not force_refresh:
             logger.info("[C5] 读取缓存: %s", cache_path)
             try:
@@ -114,14 +116,15 @@ class C5Client:
                 not isinstance(item, dict) or item.get("source") != "c5"
                 for item in cached
             ):
-                raise C5ClientError("C5 缓存格式无效，请使用 --no-cache 重新拉取")
+                raise C5ClientError("C5 缓存格式无效，请使用 refresh 命令重新拉取")
             for item in cached:
                 self.bound_steam_ids.update(self.extract_steam_ids(item))
             logger.info(
                 "[C5] 缓存中识别到 %d 个接收 Steam 账号",
                 len(self.bound_steam_ids),
             )
-            return cached
+            if not force_refresh and not incremental:
+                return cached
 
         if not self.cookie:
             raise C5AuthenticationError("未配置 c5.cookie")
@@ -135,14 +138,33 @@ class C5Client:
             self.bound_steam_ids = self.extract_steam_ids(user_payload)
 
         all_orders: list[dict] = []
-        seen_orders: set[tuple[str, str]] = set()
+        seen_orders: set[tuple[str, str]] = {
+            (str(item.get("game", "")), str(item.get("order_no", "")))
+            for item in cached
+            if item.get("order_no")
+        } if incremental else set()
         for game in games:
             app_id = GAME_APP_IDS.get(game)
             if not app_id:
                 logger.warning("[C5] 暂不支持游戏标识: %s", game)
                 continue
-            game_orders = self._fetch_game_orders(game, app_id, seen_orders)
+            stop_order_ids = {
+                order_no for cached_game, order_no in seen_orders
+                if cached_game == game
+            } if incremental else set()
+            game_orders = self._fetch_game_orders(
+                game, app_id, seen_orders, stop_order_ids=stop_order_ids
+            )
             all_orders.extend(game_orders)
+
+        if incremental and cached:
+            new_count = len(all_orders)
+            all_orders = self._merge_orders(all_orders, cached)
+            logger.info(
+                "[C5] 增量拉取完成，新增 %d 件，合并后 %d 件",
+                new_count,
+                len(all_orders),
+            )
 
         if cache_path:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,9 +184,11 @@ class C5Client:
         game: str,
         app_id: int,
         seen_orders: set[tuple[str, str]],
+        stop_order_ids: set[str] | None = None,
     ) -> list[dict]:
         result: list[dict] = []
         pagination_complete = False
+        stop_order_ids = stop_order_ids or set()
         for page in range(1, self.max_pages + 1):
             payload = self._request_json(
                 self.BUY_LIST_PATH,
@@ -185,10 +209,14 @@ class C5Client:
             for raw_order in raw_orders:
                 self.bound_steam_ids.update(self.extract_steam_ids(raw_order))
 
+            reached_cache = False
             for raw_order in raw_orders:
                 if not isinstance(raw_order, dict) or not self._is_completed(raw_order):
                     continue
                 order_id = self._order_id(raw_order)
+                if order_id and order_id in stop_order_ids:
+                    reached_cache = True
+                    break
                 dedupe_key = (game, order_id)
                 if order_id and dedupe_key in seen_orders:
                     continue
@@ -220,6 +248,9 @@ class C5Client:
                 len(raw_orders),
                 len(result),
             )
+            if reached_cache:
+                pagination_complete = True
+                break
             if not raw_orders:
                 pagination_complete = True
                 break
@@ -240,6 +271,20 @@ class C5Client:
                 "拒绝使用可能被截断的数据；请增大 c5.max_pages"
             )
         return result
+
+    @staticmethod
+    def _merge_orders(new_orders: list[dict], cached_orders: list[dict]) -> list[dict]:
+        """按条目 ID 合并新旧记录，避免多饰品订单重复。"""
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for order in [*new_orders, *cached_orders]:
+            record_id = str(order.get("id", ""))
+            if record_id and record_id in seen:
+                continue
+            if record_id:
+                seen.add(record_id)
+            merged.append(order)
+        return merged
 
     def _parse_order(
         self,

@@ -54,17 +54,34 @@ def load_config(config_path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Steam 挂刀收益统计工具（BUFF/C5 → Steam）"
     )
     parser.add_argument(
-        "--config", default="config.yaml",
-        help="配置文件路径（默认：config.yaml）"
+        "command",
+        choices=("sync", "refresh", "build", "check-login", "view"),
+        help=(
+            "执行动作：sync 增量抓取后聚合；refresh 全量抓取后聚合；"
+            "build 使用本地数据聚合并导出；check-login 仅校验 Cookie；"
+            "view 查看已导出的 CSV"
+        ),
     )
     parser.add_argument(
-        "--no-cache", action="store_true",
-        help="忽略本地缓存，强制重新拉取数据"
+        "view_path",
+        nargs="?",
+        help="view 命令要查看的 CSV 路径；省略时查看最新报告",
+    )
+    parser.add_argument(
+        "--platform",
+        dest="platforms",
+        action="append",
+        choices=("buff", "c5", "steam"),
+        help="仅操作指定平台；可重复传入，例如 --platform buff --platform steam",
+    )
+    parser.add_argument(
+        "--config", default="config.yaml",
+        help="配置文件路径（默认：config.yaml）"
     )
     parser.add_argument(
         "--no-export", action="store_true",
@@ -75,14 +92,25 @@ def main() -> None:
         help="跳过 Cookie 有效性检查（加快启动）"
     )
     parser.add_argument(
-        "--view-csv", nargs="?", const="latest", default=None,
-        help="在终端友好地展示指定的 CSV 报告。如果未指定路径，则展示最新生成的报告。"
-    )
-    parser.add_argument(
         "--open-html", action="store_true",
         help="导出 HTML 看板后，自动在浏览器中打开"
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command != "view" and args.view_path is not None:
+        parser.error("只有 view 命令可以指定 CSV 路径")
+    if args.skip_login_check and args.command not in {"sync", "refresh"}:
+        parser.error("--skip-login-check 仅用于 sync 或 refresh")
+    if (args.no_export or args.open_html) and args.command not in {"sync", "refresh", "build"}:
+        parser.error("--no-export 和 --open-html 仅用于 sync、refresh 或 build")
+    if args.no_export and args.open_html:
+        parser.error("--no-export 与 --open-html 不能同时使用")
+    if args.platforms and args.command in {"build", "view"}:
+        parser.error(f"{args.command} 不访问平台，不接受 --platform")
 
     # 1. 加载配置
     cfg = load_config(args.config)
@@ -101,6 +129,7 @@ def main() -> None:
         fallback_rates=currency_cfg.get("fallback_rates", {}),
         cache_path=data_dir / "exchange_rates.json",
         cache_ttl_hours=cache_ttl,
+        allow_online=args.command in {"sync", "refresh"},
     )
 
     buff_client = BuffClient(
@@ -110,6 +139,8 @@ def main() -> None:
     )
 
     c5_enabled = bool(c5_cfg.get("enabled", False))
+    if args.platforms and "c5" in args.platforms and not c5_enabled:
+        parser.error("C5 未启用；请先在配置中设置 c5.enabled: true")
     c5_client = C5Client(
         cookie=c5_cfg.get("cookie", ""),
         page_size=c5_cfg.get("page_size", 60),
@@ -126,10 +157,10 @@ def main() -> None:
     calculator = ProfitCalculator()
     reporter = ReportGenerator(output_dir=output_dir)
 
-    # 2.5 检查是否是查看 CSV 报告模式
-    if args.view_csv is not None:
+    # 2.5 查看已导出的 CSV 报告，不校验 Cookie、不抓取数据。
+    if args.command == "view":
         csv_path = None
-        if args.view_csv == "latest":
+        if args.view_path is None:
             p_output_dir = Path(output_dir)
             csv_files = list(p_output_dir.glob("profit_report_*.csv"))
             if not csv_files:
@@ -138,7 +169,7 @@ def main() -> None:
             csv_files.sort()
             csv_path = csv_files[-1]
         else:
-            csv_path = Path(args.view_csv)
+            csv_path = Path(args.view_path)
             if not csv_path.exists():
                 logger.error("指定的 CSV 报告文件不存在：%s", csv_path)
                 sys.exit(1)
@@ -146,15 +177,68 @@ def main() -> None:
         reporter.view_csv(csv_path)
         sys.exit(0)
 
-    # 3. Cookie 验证
-    if not args.skip_login_check:
-        logger.info("正在验证 Cookie...")
-        buff_ok = buff_client.check_login()
-        steam_ok = steam_client.check_login()
-        c5_ok = c5_client.check_login() if c5_client else True
-        if not buff_ok or not steam_ok or not c5_ok:
-            logger.error("Cookie 验证失败，请更新配置后重试。使用 --skip-login-check 跳过此步骤。")
-            sys.exit(1)
+    # 3. 按平台校验与抓取。单个平台失败不会阻止其他平台继续执行。
+    configured_platforms = {"buff", "steam"}
+    if c5_enabled:
+        configured_platforms.add("c5")
+    selected_platforms = set(args.platforms or configured_platforms)
+    network_action = args.command in {"sync", "refresh", "check-login"}
+    failed_platforms: set[str] = set()
+
+    clients = {
+        "buff": buff_client,
+        "steam": steam_client,
+        "c5": c5_client,
+    }
+    if network_action and not args.skip_login_check:
+        for platform in ("buff", "c5", "steam"):
+            if platform not in selected_platforms:
+                continue
+            logger.info("正在验证 %s Cookie...", platform.upper())
+            client = clients[platform]
+            if client is None or not client.check_login():
+                failed_platforms.add(platform)
+
+    if args.command == "check-login":
+        if failed_platforms:
+            logger.error("Cookie 校验失败的平台：%s", ", ".join(sorted(failed_platforms)))
+            raise SystemExit(1)
+        logger.info("所选平台 Cookie 均有效：%s", ", ".join(sorted(selected_platforms)))
+        return
+
+    games: list[str] = buff_cfg.get("games", ["csgo"])
+    fetch_platforms = selected_platforms - failed_platforms if network_action else set()
+    force_refresh = args.command == "refresh"
+    incremental = args.command == "sync"
+
+    if "buff" in fetch_platforms:
+        for game in games:
+            buff_client.fetch_buy_orders(
+                game=game,
+                cache_path=data_dir / f"buff_{game}_orders.json",
+                force_refresh=force_refresh,
+                incremental=incremental,
+            )
+
+    if "c5" in fetch_platforms and c5_client:
+        try:
+            c5_client.fetch_buy_orders(
+                games=games,
+                cache_path=data_dir / "c5_buy_orders.json",
+                force_refresh=force_refresh,
+                incremental=incremental,
+            )
+        except C5ClientError as exc:
+            logger.error("C5 抓取失败：%s", exc)
+            failed_platforms.add("c5")
+
+    if "steam" in fetch_platforms:
+        steam_client.fetch_sell_history(
+            cache_path=data_dir / "steam_sales.json",
+            fetch_count=steam_cfg.get("fetch_count", 500),
+            force_refresh=force_refresh,
+            incremental=incremental,
+        )
 
     # 提取当前登录的 Steam ID
     current_steam_id = steam_cfg.get("steam_id", "")
@@ -169,18 +253,18 @@ def main() -> None:
                 "或提供有效的 steam_login_secure，避免跨账号混算。"
             )
             sys.exit(1)
-        logger.warning("未检测到当前 Steam ID，将跳过按 Steam 账号分区匹配的逻辑")
+        else:
+            logger.warning("未检测到当前 Steam ID，将跳过按 Steam 账号分区匹配的逻辑")
 
-    # 4. 拉取买单历史（BUFF + 可选 C5）
-    games: list[str] = buff_cfg.get("games", ["csgo"])
+    # 4. 从本地数据聚合买单历史（联网动作已在上方更新缓存）
     all_buy_orders: list[dict] = []
 
     for game in games:
         cache_file = data_dir / f"buff_{game}_orders.json"
+        _require_local_cache(cache_file)
         orders = buff_client.fetch_buy_orders(
             game=game,
             cache_path=cache_file,
-            force_refresh=args.no_cache,
         )
         all_buy_orders.extend(orders)
 
@@ -188,11 +272,11 @@ def main() -> None:
 
     if c5_client:
         c5_cache = data_dir / "c5_buy_orders.json"
+        _require_local_cache(c5_cache)
         try:
             c5_orders = c5_client.fetch_buy_orders(
                 games=games,
                 cache_path=c5_cache,
-                force_refresh=args.no_cache,
             )
         except C5ClientError as exc:
             logger.error("C5 买单拉取失败，为避免使用不完整数据，本次统计已终止：%s", exc)
@@ -202,12 +286,12 @@ def main() -> None:
 
     logger.info("全部平台总计买单：%d 件", len(all_buy_orders))
 
-    # 5. 拉取 Steam 卖单历史
+    # 5. 从本地数据读取 Steam 卖单历史
     steam_cache = data_dir / "steam_sales.json"
+    _require_local_cache(steam_cache)
     steam_sales = steam_client.fetch_sell_history(
         cache_path=steam_cache,
         fetch_count=steam_cfg.get("fetch_count", 500),
-        force_refresh=args.no_cache,
     )
     logger.info("Steam 总计卖单：%d 条", len(steam_sales))
 
@@ -255,6 +339,20 @@ def main() -> None:
             import webbrowser
             logger.info("正在浏览器中打开 HTML 报告看板...")
             webbrowser.open(html_path.absolute().as_uri())
+
+    if failed_platforms:
+        logger.error(
+            "报告已使用本地缓存生成，但以下平台本次未更新：%s",
+            ", ".join(sorted(failed_platforms)),
+        )
+        raise SystemExit(1)
+
+
+def _require_local_cache(cache_path: Path) -> None:
+    """聚合前确认抓取阶段已生成所需的本地数据。"""
+    if not cache_path.exists():
+        logger.error("本地数据不存在：%s；请确认对应平台已成功抓取", cache_path)
+        raise SystemExit(1)
 
 
 def _apply_date_filter(

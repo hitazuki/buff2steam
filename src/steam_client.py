@@ -95,6 +95,7 @@ class SteamClient:
         cache_path: Path | None = None,
         fetch_count: int = 500,
         force_refresh: bool = False,
+        incremental: bool = False,
     ) -> list[dict]:
         """
         拉取全部卖单历史
@@ -102,10 +103,17 @@ class SteamClient:
         Returns:
             卖单列表，每条记录格式见 `_parse_listing`
         """
+        cached_sales: list[dict] = []
         if cache_path and cache_path.exists() and not force_refresh:
             logger.info("[Steam] 读取缓存: %s", cache_path)
             with open(cache_path, encoding="utf-8") as f:
-                return json.load(f)
+                cached_sales = json.load(f)
+            if not force_refresh and not incremental:
+                return cached_sales
+
+        cached_ids = {
+            str(sale.get("id", "")) for sale in cached_sales if sale.get("id")
+        }
 
         logger.info("[Steam] 开始拉取市场卖单历史...")
         all_sales: list[dict] = []
@@ -113,17 +121,31 @@ class SteamClient:
 
         while True:
             batch, total = self._fetch_page(start, fetch_count)
-            all_sales.extend(batch)
+            reached_cache = False
+            for sale in batch:
+                if incremental and str(sale.get("id", "")) in cached_ids:
+                    reached_cache = True
+                    break
+                all_sales.append(sale)
             logger.info("[Steam] 已获取 %d / %d 条卖单记录",
                         len(all_sales), total)
 
-            if len(all_sales) >= total or len(batch) == 0:
+            if reached_cache or start + fetch_count >= total or len(batch) == 0:
                 break
 
             start += fetch_count
             time.sleep(2.0)  # Steam 对频繁请求较敏感
 
-        logger.info("[Steam] 卖单历史拉取完成，共 %d 条", len(all_sales))
+        if incremental and cached_sales:
+            new_count = len(all_sales)
+            all_sales = self._merge_sales(all_sales, cached_sales)
+            logger.info(
+                "[Steam] 增量拉取完成，新增 %d 条，合并后 %d 条",
+                new_count,
+                len(all_sales),
+            )
+        else:
+            logger.info("[Steam] 卖单历史拉取完成，共 %d 条", len(all_sales))
 
         if cache_path:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,6 +154,20 @@ class SteamClient:
             logger.info("[Steam] 已缓存到 %s", cache_path)
 
         return all_sales
+
+    @staticmethod
+    def _merge_sales(new_sales: list[dict], cached_sales: list[dict]) -> list[dict]:
+        """按记录 ID 合并，保留接口返回的从新到旧顺序。"""
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for sale in [*new_sales, *cached_sales]:
+            record_id = str(sale.get("id", ""))
+            if record_id and record_id in seen:
+                continue
+            if record_id:
+                seen.add(record_id)
+            merged.append(sale)
+        return merged
 
     # ------------------------------------------------------------------
     # 内部方法

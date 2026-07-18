@@ -2,7 +2,9 @@ import unittest
 from pathlib import Path
 import tempfile
 import json
+import os
 import time
+from unittest.mock import Mock
 from src.currency_converter import CurrencyConverter
 
 class TestCurrencyConverter(unittest.TestCase):
@@ -55,7 +57,6 @@ class TestCurrencyConverter(unittest.TestCase):
                     "USD": 7.5,
                 }
             }
-            import os
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f)
             # Backdate the file modification time by 2 hours (7200 seconds)
@@ -79,3 +80,23 @@ class TestCurrencyConverter(unittest.TestCase):
             with open(cache_file, encoding="utf-8") as f:
                 saved = json.load(f)
             self.assertEqual(saved["rates"]["USD"], 7.15)
+
+    def test_offline_mode_uses_expired_cache_without_network(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / "rates.json"
+            cache_file.write_text(
+                json.dumps({"rates": {"USD": 7.1, "CNY": 1.0}}),
+                encoding="utf-8",
+            )
+            old = time.time() - 7200
+            os.utime(cache_file, (old, old))
+            converter = CurrencyConverter(
+                fallback_rates=self.fallback_rates,
+                cache_path=cache_file,
+                cache_ttl_hours=1.0,
+                allow_online=False,
+            )
+            converter._fetch_online_rates = Mock()
+
+            self.assertEqual(converter.convert_to_cny(1, "USD"), 7.1)
+            converter._fetch_online_rates.assert_not_called()

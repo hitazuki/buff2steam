@@ -80,33 +80,50 @@ c5:
 ### 3. 运行
 
 ```bash
-python src/main.py
+# 增量抓取，随后自动聚合并导出报告
+python src/main.py sync
+
+# 跳过抓取，使用本地数据聚合并导出报告
+python src/main.py build
 ```
 
-### 常用参数
+### 命令与常用参数
 
 ```bash
-# 强制刷新数据（忽略缓存）
-python src/main.py --no-cache
+# 全量重新抓取，随后自动聚合并导出报告
+python src/main.py refresh
 
-# 仅打印报告，不导出 CSV
-python src/main.py --no-export
+# 仅校验各平台 Cookie，不拉取交易记录
+python src/main.py check-login
+
+# 只校验 Steam Cookie
+python src/main.py check-login --platform steam
+
+# 增量抓取 BUFF 和 Steam，然后使用全部本地数据聚合报告
+python src/main.py sync --platform buff --platform steam
+
+# 使用本地数据聚合并在终端展示，不导出 CSV/HTML
+python src/main.py build --no-export
 
 # 指定配置文件
-python src/main.py --config my_config.yaml
+python src/main.py sync --config my_config.yaml
 
-# 跳过 Cookie 验证（加快启动）
-python src/main.py --skip-login-check
+# 同步时跳过 Cookie 预检（实际拉取仍可能因 Cookie 过期而失败）
+python src/main.py sync --skip-login-check
 
 # 友好展示最新生成的 CSV 报告（不请求网络数据）
-python src/main.py --view-csv
+python src/main.py view
 
 # 友好展示指定的 CSV 报告文件
-python src/main.py --view-csv output/profit_report_xxxx.csv
+python src/main.py view output/profit_report_xxxx.csv
 
 # 导出 HTML 看板后，自动在浏览器中打开
-python src/main.py --open-html
+python src/main.py build --open-html
 ```
+
+`--platform` 可选 `buff`、`c5`、`steam`，需要选择多个平台时重复传入。未指定时操作全部已启用平台。若某个平台 Cookie 校验失败，其他通过校验的平台仍会继续抓取；命令最终以非零状态退出并列出失败平台。`sync` 或 `refresh` 随后生成报告时，失败或未选择的平台会继续使用已有本地缓存。
+
+命令必须显式指定，不提供无参数默认动作。`sync` 和 `refresh` 抓取完成后都会自动执行与 `build` 相同的聚合、终端展示和导出流程。项目不再提供旧版参数兼容入口。
 
 ## 项目结构
 
