@@ -85,6 +85,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-8">
 
+        <!-- 时间范围筛选 -->
+        <section class="glass rounded-2xl p-4 sm:p-5">
+            <div class="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-lg">📅</span>
+                        <h2 class="font-semibold text-slate-100">统计时间范围</h2>
+                    </div>
+                    <p id="date-range-summary" class="mt-1 text-xs text-slate-400">全部时间</p>
+                </div>
+                <div class="flex flex-col lg:flex-row lg:items-center gap-3">
+                    <div id="date-preset-buttons" class="flex flex-wrap gap-2" aria-label="快捷时间范围">
+                        <button type="button" data-range="all" onclick="applyDatePreset('all')" class="date-preset px-3 py-1.5 rounded-lg border text-xs transition-colors">全部</button>
+                        <button type="button" data-range="7" onclick="applyDatePreset('7')" class="date-preset px-3 py-1.5 rounded-lg border text-xs transition-colors">近 7 天</button>
+                        <button type="button" data-range="30" onclick="applyDatePreset('30')" class="date-preset px-3 py-1.5 rounded-lg border text-xs transition-colors">近 30 天</button>
+                        <button type="button" data-range="90" onclick="applyDatePreset('90')" class="date-preset px-3 py-1.5 rounded-lg border text-xs transition-colors">近 90 天</button>
+                        <button type="button" data-range="year" onclick="applyDatePreset('year')" class="date-preset px-3 py-1.5 rounded-lg border text-xs transition-colors">本年</button>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                        <label for="date-start">从</label>
+                        <input type="date" id="date-start" onchange="applyCustomDateRange()" class="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500/50">
+                        <label for="date-end">至</label>
+                        <input type="date" id="date-end" onchange="applyCustomDateRange()" class="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500/50">
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- 汇总卡片网格 -->
         <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <!-- 累计净利润 -->
@@ -321,8 +349,139 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let otherHoldingsSortDirection = -1;
         let noSteamidSortField = 'bought_at';
         let noSteamidSortDirection = -1;
+        let trendChart = null;
+        let gameChart = null;
+        let activeDatePreset = 'all';
+
+        const allDatedRecords = [
+            ...RAW_DATA.trades.map(item => item.sold_at),
+            ...RAW_DATA.holdings.map(item => item.bought_at),
+            ...(RAW_DATA.other_holdings || []).map(item => item.bought_at),
+            ...(RAW_DATA.no_steamid_holdings || []).map(item => item.bought_at),
+        ].filter(Boolean).map(value => value.slice(0, 10)).sort();
+        const availableDateStart = allDatedRecords[0] || '';
+        const availableDateEnd = allDatedRecords[allDatedRecords.length - 1] || '';
 
         document.getElementById('generated-time').textContent = RAW_DATA.generated_at;
+
+        function toDateInputValue(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function dateInRange(value, start, end) {
+            if (!value) return false;
+            const date = value.slice(0, 10);
+            return (!start || date >= start) && (!end || date <= end);
+        }
+
+        function getSelectedDateRange() {
+            return {
+                start: document.getElementById('date-start').value,
+                end: document.getElementById('date-end').value,
+            };
+        }
+
+        function getDateFilteredData() {
+            const { start, end } = getSelectedDateRange();
+            return {
+                trades: RAW_DATA.trades.filter(item => dateInRange(item.sold_at, start, end)),
+                holdings: RAW_DATA.holdings.filter(item => dateInRange(item.bought_at, start, end)),
+                otherHoldings: (RAW_DATA.other_holdings || []).filter(item => dateInRange(item.bought_at, start, end)),
+                noSteamidHoldings: (RAW_DATA.no_steamid_holdings || []).filter(item => dateInRange(item.bought_at, start, end)),
+            };
+        }
+
+        function calculateSummary(trades, holdings) {
+            const totalInvested = trades.reduce((sum, item) => sum + item.buy_price, 0);
+            const totalReceived = trades.reduce((sum, item) => sum + item.sell_price_cny, 0);
+            const totalProfit = trades.reduce((sum, item) => sum + item.profit, 0);
+            const holdDays = trades.reduce((sum, item) => sum + (item.hold_days || 0), 0);
+            const byGame = {};
+            trades.forEach(item => {
+                if (!byGame[item.game]) {
+                    byGame[item.game] = { count: 0, invested_cny: 0, profit_cny: 0, balance_ratio_pct: 0 };
+                }
+                const game = byGame[item.game];
+                game.count += 1;
+                game.invested_cny += item.buy_price;
+                game.profit_cny += item.profit;
+                game.received_cny = (game.received_cny || 0) + item.sell_price_cny;
+                game.balance_ratio_pct = game.received_cny > 0 ? game.invested_cny / game.received_cny * 100 : 0;
+            });
+            return {
+                total_trades: trades.length,
+                total_invested: totalInvested,
+                total_received: totalReceived,
+                total_profit: totalProfit,
+                balance_ratio: totalReceived > 0 ? totalInvested / totalReceived * 100 : 0,
+                avg_hold_days: trades.length > 0 ? holdDays / trades.length : 0,
+                holding_count: holdings.length,
+                holding_invested: holdings.reduce((sum, item) => sum + item.buy_price, 0),
+                by_game: byGame,
+            };
+        }
+
+        function updateDatePresetStyles() {
+            document.querySelectorAll('.date-preset').forEach(button => {
+                const selected = button.dataset.range === activeDatePreset;
+                button.className = `date-preset px-3 py-1.5 rounded-lg border text-xs transition-colors ${selected
+                    ? 'bg-indigo-500/20 border-indigo-400/50 text-indigo-200'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'}`;
+            });
+        }
+
+        function applyDatePreset(preset) {
+            activeDatePreset = preset;
+            const startInput = document.getElementById('date-start');
+            const endInput = document.getElementById('date-end');
+            if (preset === 'all' || !availableDateEnd) {
+                startInput.value = '';
+                endInput.value = '';
+            } else {
+                const end = new Date(`${availableDateEnd}T00:00:00`);
+                let start = new Date(end);
+                if (preset === 'year') {
+                    start = new Date(end.getFullYear(), 0, 1);
+                } else {
+                    start.setDate(start.getDate() - Number(preset) + 1);
+                }
+                const calculatedStart = toDateInputValue(start);
+                startInput.value = availableDateStart && calculatedStart < availableDateStart
+                    ? availableDateStart
+                    : calculatedStart;
+                endInput.value = availableDateEnd;
+            }
+            refreshDateRangeDashboard();
+        }
+
+        function applyCustomDateRange() {
+            const startInput = document.getElementById('date-start');
+            const endInput = document.getElementById('date-end');
+            if (startInput.value && endInput.value && startInput.value > endInput.value) {
+                const previousStart = startInput.value;
+                startInput.value = endInput.value;
+                endInput.value = previousStart;
+            }
+            activeDatePreset = 'custom';
+            refreshDateRangeDashboard();
+        }
+
+        function refreshDateRangeDashboard() {
+            const rangeData = getDateFilteredData();
+            const summary = calculateSummary(rangeData.trades, rangeData.holdings);
+            const { start, end } = getSelectedDateRange();
+            const rangeText = start || end ? `${start || '最早'} 至 ${end || '最新'}` : '全部时间';
+            document.getElementById('date-range-summary').textContent =
+                `${rangeText} · ${summary.total_trades} 笔完成交易，${summary.holding_count} 件区间内买入的当前持仓`;
+            updateDatePresetStyles();
+            renderSummaryCards(summary);
+            renderCharts(rangeData.trades, summary.by_game);
+            renderDataCoverage(rangeData);
+            handleFilter();
+        }
 
         // 分组辅助函数
         function groupTrades(tradesList) {
@@ -534,18 +693,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // 载入页面数据
         function initDashboard() {
-            renderSummaryCards();
-            renderCharts();
-            renderDataCoverage();
+            const startInput = document.getElementById('date-start');
+            const endInput = document.getElementById('date-end');
+            startInput.min = availableDateStart;
+            startInput.max = availableDateEnd;
+            endInput.min = availableDateStart;
+            endInput.max = availableDateEnd;
+            refreshDateRangeDashboard();
             switchTab(currentTab);
         }
 
-        function renderDataCoverage() {
+        function renderDataCoverage(rangeData = getDateFilteredData()) {
             const counts = {
-                trades: RAW_DATA.trades.length,
-                holdings: RAW_DATA.holdings.length,
-                other: (RAW_DATA.other_holdings || []).length,
-                missing: (RAW_DATA.no_steamid_holdings || []).length,
+                trades: rangeData.trades.length,
+                holdings: rangeData.holdings.length,
+                other: rangeData.otherHoldings.length,
+                missing: rangeData.noSteamidHoldings.length,
             };
             const totalBuys = counts.trades + counts.holdings + counts.other + counts.missing;
             document.getElementById('tab-count-trades').textContent = `(${counts.trades})`;
@@ -556,14 +719,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 `已载入 ${totalBuys} 条买入明细：当前账号 ${counts.holdings + counts.trades} 条，` +
                 `其他账号 ${counts.other} 条，缺失 SteamID ${counts.missing} 条。` +
                 `表格按饰品、平台和价格合并，每页显示 ${pageSize} 组，可使用下方分页查看全部。`;
-            if (counts.trades === 0) {
-                document.getElementById('empty-trades-notice').classList.remove('hidden');
-            }
+            document.getElementById('empty-trades-notice').classList.toggle('hidden', counts.trades > 0);
         }
 
         // 渲染统计卡片
-        function renderSummaryCards() {
-            const sum = RAW_DATA.summary;
+        function renderSummaryCards(sum) {
             document.getElementById('stat-total-profit').textContent = `¥${sum.total_profit.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
             document.getElementById('stat-total-trades').textContent = sum.total_trades;
             document.getElementById('stat-balance-ratio').textContent = `${sum.balance_ratio.toFixed(2)}%`;
@@ -615,9 +775,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const query = document.getElementById('search-input').value.toLowerCase().trim();
             const game = document.getElementById('filter-game').value;
             const profitState = document.getElementById('filter-profit').value;
+            const rangeData = getDateFilteredData();
 
             if (currentTab === 'trades') {
-                filteredTrades = RAW_DATA.trades.filter(t => {
+                filteredTrades = rangeData.trades.filter(t => {
                     const matchQuery = t.name.toLowerCase().includes(query) || 
                                        (t.name_zh && t.name_zh.toLowerCase().includes(query)) || 
                                        t.buff_no.includes(query) || 
@@ -631,7 +792,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 tradesPage = 1;
                 sortAndRenderTable();
             } else if (currentTab === 'holdings') {
-                filteredHoldings = RAW_DATA.holdings.filter(h => {
+                filteredHoldings = rangeData.holdings.filter(h => {
                     const matchQuery = h.name.toLowerCase().includes(query) || 
                                        (h.name_zh && h.name_zh.toLowerCase().includes(query)) || 
                                        h.buff_no.includes(query);
@@ -641,7 +802,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 holdingsPage = 1;
                 sortAndRenderTable();
             } else if (currentTab === 'other-holdings') {
-                filteredOtherHoldings = (RAW_DATA.other_holdings || []).filter(o => {
+                filteredOtherHoldings = rangeData.otherHoldings.filter(o => {
                     const matchQuery = o.name.toLowerCase().includes(query) || 
                                        (o.name_zh && o.name_zh.toLowerCase().includes(query)) || 
                                        o.buff_no.includes(query) ||
@@ -652,7 +813,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 otherHoldingsPage = 1;
                 sortAndRenderTable();
             } else {
-                filteredNoSteamid = (RAW_DATA.no_steamid_holdings || []).filter(o => {
+                filteredNoSteamid = rangeData.noSteamidHoldings.filter(o => {
                     const matchQuery = o.name.toLowerCase().includes(query) || 
                                        (o.name_zh && o.name_zh.toLowerCase().includes(query)) || 
                                        o.buff_no.includes(query);
@@ -1101,11 +1262,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         // 渲染图表
-        function renderCharts() {
+        function renderCharts(trades, gameBreakdowns) {
             // ---------------------------------
             // 1. 累计收益趋势线图
             // ---------------------------------
-            const sortedTrades = [...RAW_DATA.trades].sort((a, b) => a.sold_at.localeCompare(b.sold_at));
+            const sortedTrades = [...trades].sort((a, b) => a.sold_at.localeCompare(b.sold_at));
             
             // 按日期累加收益
             const profitByDate = {};
@@ -1122,7 +1283,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             });
 
             const ctxTrend = document.getElementById('trend-chart').getContext('2d');
-            new Chart(ctxTrend, {
+            if (trendChart) trendChart.destroy();
+            trendChart = new Chart(ctxTrend, {
                 type: 'line',
                 data: {
                     labels: dates,
@@ -1174,25 +1336,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             // ---------------------------------
             // 2. 游戏品类占比饼图
             // ---------------------------------
-            const gameBreakdowns = RAW_DATA.summary.by_game;
             const games = Object.keys(gameBreakdowns);
             const profits = games.map(g => gameBreakdowns[g].profit_cny);
+            const chartValues = profits.map(value => Math.abs(value));
             
             // 界面中更新具体数值
-            if (gameBreakdowns.csgo) {
-                document.getElementById('game-cs2-profit').textContent = `¥${gameBreakdowns.csgo.profit_cny.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
-            }
-            if (gameBreakdowns.dota2) {
-                document.getElementById('game-dota2-profit').textContent = `¥${gameBreakdowns.dota2.profit_cny.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
-            }
+            document.getElementById('game-cs2-profit').textContent =
+                `¥${(gameBreakdowns.csgo?.profit_cny || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+            document.getElementById('game-dota2-profit').textContent =
+                `¥${(gameBreakdowns.dota2?.profit_cny || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}`;
 
             const ctxGame = document.getElementById('game-chart').getContext('2d');
-            new Chart(ctxGame, {
+            if (gameChart) gameChart.destroy();
+            gameChart = new Chart(ctxGame, {
                 type: 'doughnut',
                 data: {
                     labels: games.map(g => g === 'csgo' ? 'CS2' : 'DOTA2'),
                     datasets: [{
-                        data: profits,
+                        data: chartValues,
                         backgroundColor: ['#3b82f6', '#34d399'],
                         borderColor: '#0f172a',
                         borderWidth: 3,
@@ -1214,9 +1375,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             borderWidth: 1,
                             callbacks: {
                                 label: function(context) {
-                                    const val = context.raw;
-                                    const sum = profits.reduce((a, b) => a + b, 0);
-                                    const pct = sum > 0 ? ((val / sum) * 100).toFixed(1) : 0;
+                                    const val = profits[context.dataIndex];
+                                    const sum = chartValues.reduce((a, b) => a + b, 0);
+                                    const pct = sum > 0 ? ((Math.abs(val) / sum) * 100).toFixed(1) : 0;
                                     return `利润: ¥${val.toFixed(2)} (${pct}%)`;
                                 }
                             }

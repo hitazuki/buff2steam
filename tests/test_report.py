@@ -109,6 +109,12 @@ class TestReportGenerator(unittest.TestCase):
                 self.assertIn("data-coverage-note", content)
                 self.assertIn("tab-count-holdings", content)
                 self.assertIn("empty-trades-notice", content)
+                self.assertIn('id="date-start"', content)
+                self.assertIn('id="date-end"', content)
+                self.assertIn("applyDatePreset('30')", content)
+                self.assertIn("function calculateSummary(trades, holdings)", content)
+                self.assertIn("dateInRange(item.sold_at, start, end)", content)
+                self.assertIn("renderCharts(rangeData.trades, summary.by_game)", content)
 
     def test_view_csv(self):
         from io import StringIO
