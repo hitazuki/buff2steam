@@ -21,25 +21,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <style>
         body {
             font-family: 'Noto Sans SC', sans-serif;
-            background: radial-gradient(circle at top right, #1e1b4b, #0f172a, #020617);
+            background-color: #020617;
+            background-image: radial-gradient(circle at top right, #1e1b4b, #0f172a, #020617);
         }
         .font-display {
             font-family: 'Outfit', sans-serif;
         }
         .glass {
-            background: rgba(30, 41, 59, 0.45);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
+            /* Avoid backdrop-filter here: large blurred surfaces are repainted on
+               every scroll frame in Chromium. This opaque gradient keeps the
+               glass-like appearance without sampling the page behind it. */
+            background: linear-gradient(145deg, rgba(30, 41, 59, 0.96), rgba(15, 23, 42, 0.96));
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
         .glow-emerald {
-            box-shadow: 0 0 25px -5px rgba(16, 185, 129, 0.15);
+            box-shadow: 0 0 18px -8px rgba(16, 185, 129, 0.14);
         }
         .glow-red {
-            box-shadow: 0 0 25px -5px rgba(239, 68, 68, 0.15);
+            box-shadow: 0 0 18px -8px rgba(239, 68, 68, 0.14);
         }
         .glow-blue {
-            box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.15);
+            box-shadow: 0 0 18px -8px rgba(59, 130, 246, 0.14);
         }
         ::-webkit-scrollbar {
             width: 6px;
@@ -60,7 +62,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body class="min-h-screen text-slate-100 pb-16 font-sans">
 
     <!-- 顶部导航栏 -->
-    <header class="border-b border-slate-800/60 sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md">
+    <header class="border-b border-slate-800/60 sticky top-0 z-50 bg-slate-950/95 shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div class="flex items-center gap-3">
                 <div class="h-10 w-10 rounded-xl bg-gradient-to-tr from-indigo-500 to-emerald-400 flex items-center justify-center text-white text-xl font-bold shadow-lg">
@@ -86,7 +88,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- 汇总卡片网格 -->
         <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <!-- 累计净利润 -->
-            <div class="glass rounded-2xl p-6 glow-emerald hover:border-emerald-500/30 transition-all duration-300">
+            <div class="glass rounded-2xl p-6 glow-emerald hover:border-emerald-500/30 transition-colors duration-300">
                 <div class="flex items-center justify-between">
                     <span class="text-sm font-medium text-slate-400">累计净利润</span>
                     <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">CNY</span>
@@ -102,7 +104,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
 
             <!-- 倒余额比例 -->
-            <div class="glass rounded-2xl p-6 glow-blue hover:border-blue-500/30 transition-all duration-300">
+            <div class="glass rounded-2xl p-6 glow-blue hover:border-blue-500/30 transition-colors duration-300">
                 <div class="flex items-center justify-between">
                     <span class="text-sm font-medium text-slate-400">综合倒余额比例</span>
                     <span class="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">比例</span>
@@ -118,7 +120,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
 
             <!-- 资金往来 -->
-            <div class="glass rounded-2xl p-6 hover:border-slate-500/30 transition-all duration-300">
+            <div class="glass rounded-2xl p-6 hover:border-slate-500/30 transition-colors duration-300">
                 <div class="flex items-center justify-between">
                     <span class="text-sm font-medium text-slate-400">总投入成本 / 到手金额</span>
                     <span class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-medium">流水</span>
@@ -139,7 +141,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
 
             <!-- 当前持仓 -->
-            <div class="glass rounded-2xl p-6 glow-red hover:border-red-500/30 transition-all duration-300">
+            <div class="glass rounded-2xl p-6 glow-red hover:border-red-500/30 transition-colors duration-300">
                 <div class="flex items-center justify-between">
                     <span class="text-sm font-medium text-slate-400">当前持仓</span>
                     <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-medium">库存</span>
@@ -193,7 +195,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </section>
 
         <!-- 数据表格与分类选项卡 -->
-        <section class="glass rounded-2xl overflow-hidden shadow-2xl">
+        <section class="glass rounded-2xl overflow-hidden shadow-lg">
             <div id="data-coverage-note" class="px-6 py-3 border-b border-slate-800/60 bg-indigo-500/5 text-xs text-slate-300"></div>
             <!-- 标签页选择器与搜索过滤 -->
             <div class="p-6 border-b border-slate-800/60 space-y-4">
