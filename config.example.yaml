@@ -50,6 +50,38 @@ currency:
     BRL: 1.30
     CNY: 1.0
 
+# 长期行情监控（第一版：裂空武器箱，BUFF → Steam）
+monitoring:
+  interval_seconds: 300
+  history_days: 30
+  database: "./data/monitor.db"
+  health_failure_threshold: 3
+  item:
+    item_key: "csgo:fracture_case"
+    appid: 730
+    smis_id: 1579
+    name: "Fracture Case"
+    name_zh: "裂空武器箱"
+    platform: "buff"
+  source:
+    timeout_seconds: 15
+    max_retries: 3
+    # auth_key/auth2 默认跟随当前 SMIS 前端实现；站点变更时可在此覆盖。
+  strategy:
+    max_ratio: 0.72
+    max_age_minutes: 15
+    min_buff_sell_num: 100
+    min_steam_volume: 1000
+    confirmations: 2
+    clear_confirmations: 2
+
+notifications:
+  pushplus:
+    enabled: true
+    token_env: "PUSHPLUS_TOKEN"
+    timeout_seconds: 10
+    max_retries: 2
+
 settings:
   match_strategy: "fifo"     # 匹配策略：fifo（先进先出）
   cache_ttl_hours: 6         # 本地缓存有效时间（小时）

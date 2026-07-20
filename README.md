@@ -121,6 +121,37 @@ python src/main.py view output/profit_report_xxxx.csv
 python src/main.py build --open-html
 ```
 
+## 裂空武器箱行情监控
+
+监控子系统使用 SMIS 行情，以 BUFF 买入并挂到 Steam 的预计余额比例作为信号。首次运行会尝试回填 30 天历史；实时行情与告警状态保存在 `data/monitor.db`。
+
+先在 [PushPlus](https://www.pushplus.plus/) 获取个人 token，并设置环境变量：
+
+```powershell
+$env:PUSHPLUS_TOKEN="你的 PushPlus token"
+```
+
+常用命令：
+
+```bash
+# 验证 PushPlus 通知
+python src/main.py monitor --test-notify
+
+# 获取行情、回填历史并评估，但不发通知、不改变告警状态
+python src/main.py monitor --once --dry-run
+
+# 正式执行一轮
+python src/main.py monitor --once
+
+# 每 5 分钟长期运行，Ctrl+C 安全退出
+python src/main.py monitor
+
+# 查看最近行情和状态
+python src/main.py monitor --status
+```
+
+默认策略要求挂刀比例不高于 72%、数据不超过 15 分钟、BUFF 在售数不少于 100、Steam 日成交量不少于 1000，并连续命中两次。阈值可在 `config.yaml` 的 `monitoring.strategy` 中调整。
+
 `--platform` 可选 `buff`、`c5`、`steam`，需要选择多个平台时重复传入。未指定时操作全部已启用平台。若某个平台 Cookie 校验失败，其他通过校验的平台仍会继续抓取；命令最终以非零状态退出并列出失败平台。`sync` 或 `refresh` 随后生成报告时，失败或未选择的平台会继续使用已有本地缓存。
 
 命令必须显式指定，不提供无参数默认动作。`sync` 和 `refresh` 抓取完成后都会自动执行与 `build` 相同的聚合、终端展示和导出流程。项目不再提供旧版参数兼容入口。

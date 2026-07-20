@@ -60,11 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "command",
-        choices=("sync", "refresh", "build", "check-login", "view"),
+        choices=("sync", "refresh", "build", "check-login", "view", "monitor"),
         help=(
             "执行动作：sync 增量抓取后聚合；refresh 全量抓取后聚合；"
             "build 使用本地数据聚合并导出；check-login 仅校验 Cookie；"
-            "view 查看已导出的 CSV"
+            "view 查看已导出的 CSV；monitor 运行行情监控"
         ),
     )
     parser.add_argument(
@@ -95,6 +95,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--open-html", action="store_true",
         help="导出 HTML 看板后，自动在浏览器中打开"
     )
+    parser.add_argument(
+        "--once", action="store_true",
+        help="monitor 命令仅执行一轮后退出"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="monitor 命令保存行情并评估策略，但不发送通知或改变告警状态"
+    )
+    parser.add_argument(
+        "--test-notify", action="store_true",
+        help="monitor 命令发送一条 PushPlus 测试通知后退出"
+    )
+    parser.add_argument(
+        "--status", action="store_true",
+        help="monitor 命令显示最近行情和监控状态后退出"
+    )
     return parser
 
 
@@ -111,9 +127,28 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--no-export 与 --open-html 不能同时使用")
     if args.platforms and args.command in {"build", "view"}:
         parser.error(f"{args.command} 不访问平台，不接受 --platform")
+    monitor_flags = (args.once, args.dry_run, args.test_notify, args.status)
+    if args.command != "monitor" and any(monitor_flags):
+        parser.error("--once/--dry-run/--test-notify/--status 仅用于 monitor")
+    if args.command == "monitor":
+        if args.view_path is not None:
+            parser.error("monitor 不接受额外位置参数")
+        if args.platforms or args.no_export or args.open_html or args.skip_login_check:
+            parser.error("monitor 不接受交易统计命令的选项")
+        if sum(bool(value) for value in (args.test_notify, args.status)) > 1:
+            parser.error("--test-notify 与 --status 不能同时使用")
+        if (args.test_notify or args.status) and (args.once or args.dry_run):
+            parser.error("--test-notify/--status 不能与 --once/--dry-run 组合")
+        if args.dry_run and not args.once:
+            parser.error("--dry-run 必须与 --once 一起使用")
 
     # 1. 加载配置
     cfg = load_config(args.config)
+
+    if args.command == "monitor":
+        _run_monitor_command(cfg, args)
+        return
+
     buff_cfg = cfg.get("buff", {})
     c5_cfg = cfg.get("c5", {})
     steam_cfg = cfg.get("steam", {})
@@ -353,6 +388,114 @@ def _require_local_cache(cache_path: Path) -> None:
     if not cache_path.exists():
         logger.error("本地数据不存在：%s；请确认对应平台已成功抓取", cache_path)
         raise SystemExit(1)
+
+
+def _run_monitor_command(cfg: dict, args: argparse.Namespace) -> None:
+    """构建并运行独立行情监控，不初始化个人交易客户端。"""
+    import os
+    from datetime import datetime
+
+    from dotenv import load_dotenv
+
+    from src.monitoring.runner import MonitorRunner
+    from src.monitoring.service import MonitorService
+    from src.monitoring.smis_client import SmisClient
+    from src.monitoring.storage import MonitorStorage
+    from src.monitoring.strategy import ThresholdStrategy
+    from src.notifications import CompositeNotifier, ConsoleNotifier, PushPlusNotifier
+
+    load_dotenv()
+    monitor_cfg = cfg.get("monitoring", {})
+    settings = cfg.get("settings", {})
+    item_cfg = monitor_cfg.get("item", {})
+    item = {
+        "item_key": item_cfg.get("item_key", "csgo:fracture_case"),
+        "appid": int(item_cfg.get("appid", 730)),
+        "smis_id": int(item_cfg.get("smis_id", 1579)),
+        "name": item_cfg.get("name", "Fracture Case"),
+        "name_zh": item_cfg.get("name_zh", "裂空武器箱"),
+        "platform": item_cfg.get("platform", "buff"),
+    }
+    if item["platform"] != "buff":
+        raise SystemExit("第一版监控仅支持 platform: buff")
+
+    data_dir = Path(settings.get("data_dir", "./data"))
+    database = Path(monitor_cfg.get("database", data_dir / "monitor.db"))
+    storage = MonitorStorage(database)
+
+    if args.status:
+        state = storage.get_state(item["item_key"])
+        snapshot = storage.latest_snapshot(item["item_key"])
+        logger.info("监控状态：%s", state)
+        if snapshot:
+            logger.info("最近行情：%s", snapshot)
+        else:
+            logger.info("尚无实时行情快照")
+        return
+
+    notification_cfg = cfg.get("notifications", {}).get("pushplus", {})
+    token_env = notification_cfg.get("token_env", "PUSHPLUS_TOKEN")
+    token = os.getenv(token_env, "").strip()
+    console_notifier = ConsoleNotifier()
+    if args.dry_run:
+        notifier = console_notifier
+    else:
+        if notification_cfg.get("enabled", True) and not token:
+            raise SystemExit(
+                f"PushPlus 已启用但环境变量 {token_env} 未设置；"
+                "请配置 token，或使用 monitor --once --dry-run"
+            )
+        channels = [console_notifier]
+        if notification_cfg.get("enabled", True):
+            channels.append(PushPlusNotifier(
+                token=token,
+                timeout=float(notification_cfg.get("timeout_seconds", 10)),
+                max_retries=int(notification_cfg.get("max_retries", 2)),
+            ))
+        notifier = CompositeNotifier(channels)
+
+    if args.test_notify:
+        result = notifier.send(
+            "【buff2steam】行情监控测试",
+            f"PushPlus 通知连接成功。<br>测试时间：{datetime.now().isoformat(timespec='seconds')}",
+        )
+        if not result.success:
+            logger.error("测试通知失败：%s", result.message)
+            raise SystemExit(1)
+        logger.info("测试通知成功：%s", result.message)
+        return
+
+    source_cfg = monitor_cfg.get("source", {})
+    source = SmisClient(
+        timeout=float(source_cfg.get("timeout_seconds", 15)),
+        max_retries=int(source_cfg.get("max_retries", 3)),
+        auth_key=source_cfg.get("auth_key", SmisClient.DEFAULT_AUTH_KEY),
+        auth2=source_cfg.get("auth2", SmisClient.DEFAULT_AUTH2),
+    )
+    strategy_cfg = monitor_cfg.get("strategy", {})
+    strategy = ThresholdStrategy(
+        max_ratio=float(strategy_cfg.get("max_ratio", 0.72)),
+        max_age_minutes=int(strategy_cfg.get("max_age_minutes", 15)),
+        min_buff_sell_num=int(strategy_cfg.get("min_buff_sell_num", 100)),
+        min_steam_volume=int(strategy_cfg.get("min_steam_volume", 1000)),
+    )
+    service = MonitorService(
+        item=item,
+        source=source,
+        storage=storage,
+        strategy=strategy,
+        notifier=notifier,
+        history_days=int(monitor_cfg.get("history_days", 30)),
+        confirmations=int(strategy_cfg.get("confirmations", 2)),
+        clear_confirmations=int(strategy_cfg.get("clear_confirmations", 2)),
+        health_failure_threshold=int(monitor_cfg.get("health_failure_threshold", 3)),
+    )
+    if args.once:
+        result = service.run_once(dry_run=args.dry_run)
+        if not result.success:
+            raise SystemExit(1)
+        return
+    MonitorRunner(service, int(monitor_cfg.get("interval_seconds", 300))).run()
 
 
 def _apply_date_filter(
