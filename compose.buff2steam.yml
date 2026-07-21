@@ -1,10 +1,22 @@
 services:
   buff2steam:
-    image: ${BUFF2STEAM_IMAGE:-docker.io/hitazuki/buff2steam:latest}
+    image: docker.io/hitazuki/buff2steam:latest
     container_name: buff2steam
     restart: unless-stopped
     env_file:
       - .env.buff2steam
+    environment:
+      ASTRBOT_BASE_URL: http://astrbot:6185
+      ASTRBOT_MESSAGE_PATH: /api/v1/im/message
+      ASTRBOT_TIMEOUT_SECONDS: "10"
+      BUFF2STEAM_DATABASE: /app/data/monitor.db
+      BUFF2STEAM_BACKUP_DIR: /app/data/backups
+      BUFF2STEAM_INTERVAL_SECONDS: "300"
+      BUFF2STEAM_QUOTE_CACHE_SECONDS: "60"
+      BUFF2STEAM_MAX_ITEMS: "20"
+      SMIS_TIMEOUT_SECONDS: "15"
+      SMIS_MAX_RETRIES: "3"
+      TZ: Asia/Shanghai
     expose:
       - "8080"
     volumes:

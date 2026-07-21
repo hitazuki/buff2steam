@@ -23,15 +23,16 @@ openssl rand -hex 32
 `ASTRBOT_API_KEY`。随后启动：
 
 ```bash
-docker compose --env-file .env.buff2steam -f compose.buff2steam.yml pull
-docker compose --env-file .env.buff2steam -f compose.buff2steam.yml up -d
+docker compose -f compose.buff2steam.yml pull
+docker compose -f compose.buff2steam.yml up -d
 docker exec buff2steam python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"
 docker logs -f --tail=100 buff2steam
 ```
 
-默认拉取 `docker.io/hitazuki/buff2steam:latest`。如需固定版本，在
-`.env.buff2steam` 中将 `BUFF2STEAM_IMAGE` 改为对应标签，例如
-`docker.io/hitazuki/buff2steam:1.0.0`。
+默认拉取 `docker.io/hitazuki/buff2steam:latest`。如需固定版本，将
+`compose.buff2steam.yml` 中的 `image` 改为对应标签，例如
+`docker.io/hitazuki/buff2steam:1.0.0`。普通运行参数直接维护在 Compose 的
+`environment` 中；`.env.buff2steam` 仅保存 API Key 和服务令牌。
 
 ## 3. 安装 AstrBot 插件
 
@@ -66,8 +67,8 @@ docker restart astrbot
 ```bash
 docker logs --tail=200 buff2steam
 docker inspect --format='{{json .State.Health}}' buff2steam
-docker compose --env-file .env.buff2steam -f compose.buff2steam.yml restart buff2steam
-docker compose --env-file .env.buff2steam -f compose.buff2steam.yml down
+docker compose -f compose.buff2steam.yml restart buff2steam
+docker compose -f compose.buff2steam.yml down
 ```
 
 数据库保存在命名卷 `buff2steam-data`，每日备份位于卷内 `/app/data/backups`，保留 7 天。
