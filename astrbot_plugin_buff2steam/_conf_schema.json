@@ -1,0 +1,19 @@
+{
+  "service_base_url": {
+    "description": "buff2steam 服务地址",
+    "type": "string",
+    "default": "http://buff2steam:8080"
+  },
+  "service_token": {
+    "description": "buff2steam 服务令牌",
+    "type": "string",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "timeout_seconds": {
+    "description": "HTTP 请求超时秒数",
+    "type": "int",
+    "default": 10
+  }
+}
+

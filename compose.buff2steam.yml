@@ -1,0 +1,27 @@
+services:
+  buff2steam:
+    image: ${BUFF2STEAM_IMAGE:-docker.io/hitazuki/buff2steam:latest}
+    container_name: buff2steam
+    restart: unless-stopped
+    env_file:
+      - .env.buff2steam
+    expose:
+      - "8080"
+    volumes:
+      - buff2steam-data:/app/data
+    networks:
+      - astrbot-internal
+    mem_limit: 512m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  buff2steam-data:
+
+networks:
+  astrbot-internal:
+    external: true

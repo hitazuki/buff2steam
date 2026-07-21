@@ -1,6 +1,7 @@
 """通知渠道。"""
 
 from .base import CompositeNotifier, ConsoleNotifier, Notifier, NotifyResult
+from .astrbot import AstrBotNotifier
 from .pushplus import PushPlusNotifier
 
 __all__ = [
@@ -8,5 +9,6 @@ __all__ = [
     "ConsoleNotifier",
     "Notifier",
     "NotifyResult",
+    "AstrBotNotifier",
     "PushPlusNotifier",
 ]

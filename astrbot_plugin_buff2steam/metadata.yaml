@@ -1,0 +1,7 @@
+id: astrbot_plugin_buff2steam
+display_name: buff2steam 饰品监控
+author: buff2steam
+version: "1.0.0"
+description: 通过 buff2steam 服务查询饰品行情并管理按会话监控订阅。
+repo: ""
+

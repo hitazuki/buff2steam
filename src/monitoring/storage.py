@@ -93,7 +93,282 @@ class MonitorStorage:
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS items (
+                    smis_id INTEGER PRIMARY KEY,
+                    item_key TEXT NOT NULL UNIQUE,
+                    appid INTEGER NOT NULL,
+                    hash_name TEXT NOT NULL,
+                    cn_name TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    smis_id INTEGER NOT NULL,
+                    umo TEXT NOT NULL,
+                    max_ratio REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(smis_id, umo)
+                );
+                CREATE INDEX IF NOT EXISTS idx_subscriptions_umo
+                    ON subscriptions(umo);
+                CREATE TABLE IF NOT EXISTS subscription_state (
+                    smis_id INTEGER NOT NULL,
+                    umo TEXT NOT NULL,
+                    alert_active INTEGER NOT NULL DEFAULT 0,
+                    qualifying_count INTEGER NOT NULL DEFAULT 0,
+                    clearing_count INTEGER NOT NULL DEFAULT 0,
+                    fetch_failures INTEGER NOT NULL DEFAULT 0,
+                    health_alerted INTEGER NOT NULL DEFAULT 0,
+                    last_ratio REAL,
+                    last_signal_at TEXT,
+                    pending_signal_key TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(smis_id, umo)
+                );
+                CREATE TABLE IF NOT EXISTS notification_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_key TEXT NOT NULL,
+                    umo TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    next_attempt_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    sent_at TEXT,
+                    UNIQUE(signal_key, umo)
+                );
+                CREATE INDEX IF NOT EXISTS idx_outbox_due
+                    ON notification_outbox(status, next_attempt_at);
             """)
+
+    @staticmethod
+    def _utcnow() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def count_items(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM items").fetchone()
+        return int(row[0])
+
+    def upsert_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        now = self._utcnow()
+        with self.connect() as conn:
+            conn.execute("""
+                INSERT INTO items(
+                    smis_id,item_key,appid,hash_name,cn_name,enabled,created_at,updated_at
+                ) VALUES(?,?,?,?,?,1,?,?)
+                ON CONFLICT(smis_id) DO UPDATE SET
+                    item_key=excluded.item_key, appid=excluded.appid,
+                    hash_name=excluded.hash_name, cn_name=excluded.cn_name,
+                    enabled=1, updated_at=excluded.updated_at
+            """, (
+                int(item["smis_id"]), str(item["item_key"]), int(item["appid"]),
+                str(item["name"]), str(item["name_zh"]), now, now,
+            ))
+        return self.get_item(int(item["smis_id"]))
+
+    def get_item(self, smis_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM items WHERE smis_id=?", (int(smis_id),)).fetchone()
+        return dict(row) if row else None
+
+    def list_items(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM items"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY cn_name COLLATE NOCASE, smis_id"
+        with self.connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [dict(row) for row in rows]
+
+    def resolve_items(self, query: str) -> list[dict[str, Any]]:
+        query = query.strip()
+        if query.isdigit():
+            item = self.get_item(int(query))
+            return [item] if item else []
+        pattern = f"%{query.lower()}%"
+        with self.connect() as conn:
+            rows = conn.execute("""
+                SELECT * FROM items
+                WHERE lower(hash_name) LIKE ? OR lower(cn_name) LIKE ?
+                ORDER BY
+                    CASE WHEN lower(hash_name)=? OR lower(cn_name)=? THEN 0 ELSE 1 END,
+                    cn_name COLLATE NOCASE, smis_id
+            """, (pattern, pattern, query.lower(), query.lower())).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_subscription(self, smis_id: int, umo: str, max_ratio: float) -> dict[str, Any]:
+        now = self._utcnow()
+        with self.connect() as conn:
+            conn.execute("""
+                INSERT INTO subscriptions(smis_id,umo,max_ratio,created_at,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(smis_id,umo) DO UPDATE SET
+                    max_ratio=excluded.max_ratio, updated_at=excluded.updated_at
+            """, (int(smis_id), umo, float(max_ratio), now, now))
+        return self.get_subscription(smis_id, umo)
+
+    def get_subscription(self, smis_id: int, umo: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("""
+                SELECT s.*, i.item_key, i.appid, i.hash_name, i.cn_name
+                FROM subscriptions s JOIN items i USING(smis_id)
+                WHERE s.smis_id=? AND s.umo=?
+            """, (int(smis_id), umo)).fetchone()
+        return dict(row) if row else None
+
+    def list_subscriptions(
+        self, *, umo: str | None = None, smis_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if umo is not None:
+            clauses.append("s.umo=?")
+            params.append(umo)
+        if smis_id is not None:
+            clauses.append("s.smis_id=?")
+            params.append(int(smis_id))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(f"""
+                SELECT s.*, i.item_key, i.appid, i.hash_name, i.cn_name
+                FROM subscriptions s JOIN items i USING(smis_id)
+                {where} ORDER BY i.cn_name COLLATE NOCASE, s.umo
+            """, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_subscription(self, smis_id: int, umo: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM subscriptions WHERE smis_id=? AND umo=?", (int(smis_id), umo)
+            )
+            conn.execute(
+                "DELETE FROM subscription_state WHERE smis_id=? AND umo=?", (int(smis_id), umo)
+            )
+            conn.execute(
+                "DELETE FROM notification_outbox WHERE status='pending' AND umo=? "
+                "AND signal_key LIKE ?",
+                (umo, f"%:smis:{int(smis_id)}:%"),
+            )
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM subscriptions WHERE smis_id=?", (int(smis_id),)
+            ).fetchone()[0]
+            if not remaining:
+                conn.execute("DELETE FROM items WHERE smis_id=?", (int(smis_id),))
+            return cursor.rowcount > 0
+
+    def get_subscription_state(self, smis_id: int, umo: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("""
+                SELECT * FROM subscription_state WHERE smis_id=? AND umo=?
+            """, (int(smis_id), umo)).fetchone()
+        state = dict(DEFAULT_STATE)
+        if row:
+            state.update(dict(row))
+        state.update({"smis_id": int(smis_id), "umo": umo})
+        return state
+
+    def update_subscription_state(self, smis_id: int, umo: str, **changes: Any) -> dict[str, Any]:
+        state = self.get_subscription_state(smis_id, umo)
+        for key, value in changes.items():
+            if key not in DEFAULT_STATE:
+                raise KeyError(f"未知订阅状态字段: {key}")
+            state[key] = value
+        now = self._utcnow()
+        with self.connect() as conn:
+            conn.execute("""
+                INSERT INTO subscription_state(
+                    smis_id,umo,alert_active,qualifying_count,clearing_count,
+                    fetch_failures,health_alerted,last_ratio,last_signal_at,
+                    pending_signal_key,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(smis_id,umo) DO UPDATE SET
+                    alert_active=excluded.alert_active,
+                    qualifying_count=excluded.qualifying_count,
+                    clearing_count=excluded.clearing_count,
+                    fetch_failures=excluded.fetch_failures,
+                    health_alerted=excluded.health_alerted,
+                    last_ratio=excluded.last_ratio,
+                    last_signal_at=excluded.last_signal_at,
+                    pending_signal_key=excluded.pending_signal_key,
+                    updated_at=excluded.updated_at
+            """, (
+                int(smis_id), umo, int(state["alert_active"]), state["qualifying_count"],
+                state["clearing_count"], state["fetch_failures"],
+                int(state["health_alerted"]), state["last_ratio"], state["last_signal_at"],
+                state["pending_signal_key"], now,
+            ))
+        return self.get_subscription_state(smis_id, umo)
+
+    def enqueue_notification(
+        self, signal_key: str, umo: str, event_type: str, title: str, content: str
+    ) -> bool:
+        now = self._utcnow()
+        with self.connect() as conn:
+            cursor = conn.execute("""
+                INSERT OR IGNORE INTO notification_outbox(
+                    signal_key,umo,event_type,title,content,status,attempts,
+                    next_attempt_at,created_at
+                ) VALUES(?,?,?,?,?,'pending',0,?,?)
+            """, (signal_key, umo, event_type, title, content, now, now))
+            return cursor.rowcount > 0
+
+    def due_notifications(self, limit: int = 100) -> list[dict[str, Any]]:
+        now = self._utcnow()
+        with self.connect() as conn:
+            rows = conn.execute("""
+                SELECT * FROM notification_outbox
+                WHERE status='pending' AND next_attempt_at<=?
+                ORDER BY id LIMIT ?
+            """, (now, int(limit))).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_notification_sent(self, notification_id: int) -> None:
+        now = self._utcnow()
+        with self.connect() as conn:
+            conn.execute("""
+                UPDATE notification_outbox SET status='sent', sent_at=?, last_error=NULL
+                WHERE id=?
+            """, (now, int(notification_id)))
+
+    def mark_notification_failed(self, notification_id: int, error: str) -> None:
+        from datetime import timedelta
+
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT attempts FROM notification_outbox WHERE id=?", (int(notification_id),)
+            ).fetchone()
+            attempts = int(row[0] if row else 0) + 1
+            delay = min(60 * (2 ** min(attempts - 1, 5)), 1800)
+            next_attempt = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+            conn.execute("""
+                UPDATE notification_outbox
+                SET attempts=?, last_error=?, next_attempt_at=? WHERE id=?
+            """, (attempts, error[:1000], next_attempt, int(notification_id)))
+
+    def outbox_counts(self) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM notification_outbox GROUP BY status"
+            ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def backup(self, destination: Path) -> Path:
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source = sqlite3.connect(self.path)
+        target = sqlite3.connect(destination)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        return destination
 
     def save_snapshots(self, snapshots: list[MarketSnapshot]) -> int:
         if not snapshots:

@@ -176,6 +176,30 @@ buff2steam/
 └── requirements.txt
 ```
 
+## AstrBot 查询与监控服务
+
+项目可作为独立 Docker 服务与 AstrBot 部署在同一 VPS，通过内部网络提供行情查询、
+按 QQ 会话订阅和主动告警。服务不需要部署个人 BUFF/Steam Cookie。
+
+AstrBot 插件统一使用英文命令：
+
+```text
+/skin quote <SMIS_ID|名称>
+/skin items
+/skin watch list
+/skin watch add <SMIS_ID> [MAX_RATIO_PERCENT]
+/skin watch remove <SMIS_ID>
+/skin watch threshold <SMIS_ID> <MAX_RATIO_PERCENT>
+/skin watch test
+/skin watch status
+/skin help
+```
+
+完整部署步骤见 [DEPLOY_ASTRBOT.md](DEPLOY_ASTRBOT.md)。
+
+Docker 镜像会在推送 `v*` Git 标签时由 GitHub Actions 自动构建并发布到
+`docker.io/hitazuki/buff2steam`，支持 `linux/amd64` 和 `linux/arm64`。
+
 ## 收益计算说明
 
 ```

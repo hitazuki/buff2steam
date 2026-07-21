@@ -129,6 +129,27 @@ class SmisClient:
         )
         return snapshot
 
+    def fetch_metadata(self, smis_id: int) -> dict[str, Any]:
+        """Fetch and validate the stable fields needed to register an item."""
+        data = self._request("GET", f"/commodity/{int(smis_id)}")
+        if not isinstance(data, dict):
+            raise SmisClientError("SMIS 商品详情结构无效")
+        required = {"id", "appid", "hashName", "cnName"}
+        missing = sorted(required - data.keys())
+        if missing:
+            raise SmisClientError(f"SMIS 商品详情缺少字段: {', '.join(missing)}")
+        if int(data["id"]) != int(smis_id):
+            raise SmisClientError(
+                f"SMIS 商品 ID 不匹配: 期望 {smis_id}, 实际 {data.get('id')}"
+            )
+        return {
+            "smis_id": int(data["id"]),
+            "item_key": f"smis:{int(data['id'])}",
+            "appid": int(data["appid"]),
+            "name": str(data["hashName"]),
+            "name_zh": str(data["cnName"] or data["hashName"]),
+        }
+
     def fetch_history(self, item: dict[str, Any], days: int = 30) -> list[MarketSnapshot]:
         data = self._request(
             "POST",
