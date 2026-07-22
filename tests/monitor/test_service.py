@@ -180,6 +180,26 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(migrated.get_rule(1)["recipient_key"], "recipient:a")
         event = migrated.list_events("recipient:a", acknowledged=None)[0]
         self.assertEqual(event["delivery_status"], "sent")
+        with migrated.connect() as connection:
+            version = connection.execute(
+                "SELECT value FROM metadata WHERE key='schema_version'"
+            ).fetchone()[0]
+        self.assertEqual(version, "3")
+
+        reopened = MonitorStorage(legacy_path)
+        self.assertEqual(reopened.get_rule(1)["recipient_key"], "recipient:a")
+        self.assertEqual(len(reopened.list_events("recipient:a", acknowledged=None)), 1)
+
+    def test_newer_database_schema_is_rejected(self):
+        path = Path(self.tmp.name) / "future.db"
+        storage = MonitorStorage(path)
+        with storage.connect() as connection:
+            connection.execute(
+                "UPDATE metadata SET value='99' WHERE key='schema_version'"
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "newer than supported"):
+            MonitorStorage(path)
 
     def test_quote_uses_sixty_second_cache(self):
         manager = self.manager([0.70])
