@@ -181,6 +181,34 @@ buff2steam/
 项目可作为独立 Docker 服务与 AstrBot 部署在同一 VPS，通过内部网络提供行情查询、
 按 QQ 会话订阅和主动告警。服务不需要部署个人 BUFF/Steam Cookie。
 
+仓库提供两份 Compose 配置：
+
+- [`compose.yml`](compose.yml)：buff2steam 行情与监控服务。
+- [`compose.astrbot.example.yml`](compose.astrbot.example.yml)：参考实际 VPS
+  AstrBot 配置整理的独立部署样例。
+
+两个容器通过外部网络 `astrbot-internal` 互访。网络只需创建一次：
+
+```bash
+docker network create astrbot-internal
+```
+
+新部署 AstrBot 时，将样例复制到独立的 AstrBot 目录并命名为 `compose.yml`：
+
+```bash
+mkdir -p ~/astrbot && cd ~/astrbot
+cp /path/to/buff2steam/compose.astrbot.example.yml compose.yml
+docker compose up -d
+```
+
+已有 AstrBot Compose 时无需覆盖原配置，只需为 `astrbot` 服务和顶层网络增加
+`astrbot-internal`，并保留 `external: true`。AstrBot WebUI 示例端口为 `6185`；
+公网部署时应通过防火墙、反向代理或其他访问控制保护管理界面。
+
+插件配置中的 `service_token` 必须与 buff2steam 的
+`BUFF2STEAM_SERVICE_TOKEN` 相同；`ASTRBOT_API_KEY` 则是 buff2steam
+主动调用 AstrBot OpenAPI 使用的、仅含 `im` 权限的 Key，两者不要混用。
+
 AstrBot 插件统一使用英文命令：
 
 ```text

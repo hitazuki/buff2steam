@@ -1,14 +1,27 @@
 # buff2steam 与 AstrBot Docker 部署
 
-本方案假设 AstrBot 容器名为 `astrbot`，其宿主机数据目录为 `/opt/astrbot/data`。
-若实际名称或目录不同，请替换命令中的对应值。
+仓库中的 `compose.astrbot.example.yml` 参考实际 VPS 配置，包含 AstrBot 镜像、
+`6185` 端口、`./data:/AstrBot/data` 挂载和内部网络。AstrBot 与 buff2steam
+应放在不同目录，各自使用自己的 `compose.yml`。
 
 ## 1. 准备内部网络
 
 ```bash
 docker network create astrbot-internal || true
-docker network connect astrbot-internal astrbot || true
 ```
+
+新部署 AstrBot 时可复制样例：
+
+```bash
+mkdir -p ~/astrbot
+cp compose.astrbot.example.yml ~/astrbot/compose.yml
+cd ~/astrbot
+docker compose up -d
+```
+
+已有 AstrBot Compose 时不要直接覆盖，只需把 `astrbot-internal` 同时加入
+AstrBot 服务的 `networks` 和顶层 `networks`。网络使用 `external: true`，因此
+必须在启动任一 Compose 前创建。
 
 不要将 buff2steam 的 `8080` 端口映射到公网。AstrBot 与 buff2steam 通过容器名互访。
 
@@ -23,24 +36,27 @@ openssl rand -hex 32
 `ASTRBOT_API_KEY`。随后启动：
 
 ```bash
-docker compose -f compose.buff2steam.yml pull
-docker compose -f compose.buff2steam.yml up -d
+docker compose pull
+docker compose up -d
 docker exec buff2steam python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"
 docker logs -f --tail=100 buff2steam
 ```
 
 默认拉取 `docker.io/hitazuki/buff2steam:latest`。如需固定版本，将
-`compose.buff2steam.yml` 中的 `image` 改为对应标签，例如
+`compose.yml` 中的 `image` 改为对应标签，例如
 `docker.io/hitazuki/buff2steam:1.0.0`。普通运行参数直接维护在 Compose 的
 `environment` 中；`.env.buff2steam` 仅保存 API Key 和服务令牌。
 
 ## 3. 安装 AstrBot 插件
 
 ```bash
-mkdir -p /opt/astrbot/data/plugins/astrbot_plugin_buff2steam
-cp -a astrbot_plugin_buff2steam/. /opt/astrbot/data/plugins/astrbot_plugin_buff2steam/
+mkdir -p ~/astrbot/data/plugins/astrbot_plugin_buff2steam
+cp -a astrbot_plugin_buff2steam/. ~/astrbot/data/plugins/astrbot_plugin_buff2steam/
 docker restart astrbot
 ```
+
+如果 AstrBot 不在 `~/astrbot`，将上述宿主机目录替换为其 Compose 中
+`./data:/AstrBot/data` 对应的实际 `data` 目录。
 
 在 AstrBot WebUI 的插件配置中填写：
 
@@ -67,8 +83,8 @@ docker restart astrbot
 ```bash
 docker logs --tail=200 buff2steam
 docker inspect --format='{{json .State.Health}}' buff2steam
-docker compose -f compose.buff2steam.yml restart buff2steam
-docker compose -f compose.buff2steam.yml down
+docker compose restart buff2steam
+docker compose down
 ```
 
 数据库保存在部署目录的 `./data/monitor.db`，每日备份位于
