@@ -179,6 +179,29 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(result["name_zh"], "裂空武器箱")
         self.assertEqual(manager.source.current_calls, 1)
 
+    def test_quote_returns_all_available_platforms_and_marks_every_lowest(self):
+        manager = self.manager()
+        current = snapshot()
+        manager.source.fetch_current = lambda item: MarketSnapshot(**{
+            **current.__dict__,
+            "buff_sell_price": 3.30, "buff_sell_num": 100,
+            "uuyp_sell_price": 3.20, "uuyp_sell_num": 80,
+            "c5_sell_price": 3.10, "c5_sell_num": 60,
+            "igxe_sell_price": 3.40, "igxe_sell_num": 40,
+            "eco_sell_price": 3.10, "eco_sell_num": 20,
+        })
+
+        result = manager.quote("1579")
+
+        self.assertEqual(
+            [row["name"] for row in result["platforms"]],
+            ["BUFF", "悠悠有品", "C5", "IGXE", "ECO"],
+        )
+        self.assertEqual(
+            [row["name"] for row in result["platforms"] if row["is_lowest"]],
+            ["C5", "ECO"],
+        )
+
     def test_search_uses_smis_catalog(self):
         results = self.manager().search_items("裂空", limit=5)
         self.assertEqual(results, [{
@@ -310,6 +333,28 @@ class ServiceTestCase(unittest.TestCase):
             })
             self.assertEqual(bad.status_code, 422)
             self.assertEqual(bad.json()["error"]["code"], "validation_error")
+
+    def test_adding_same_rule_updates_existing_rule_and_resets_state(self):
+        manager = self.manager()
+        first = manager.add_rule("umo:a", 1579, "steam", 5.50)
+        self.assertEqual(first["action"], "created")
+        self.storage.update_rule_state(
+            first["id"], alert_active=1, qualifying_count=2, status="active"
+        )
+
+        second = manager.add_rule("umo:a", 1579, "steam", 5.40)
+
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual(second["action"], "updated")
+        self.assertEqual(second["previous_threshold"], 5.50)
+        self.assertEqual(second["threshold"], 5.40)
+        self.assertEqual(len(self.storage.list_rules(umo="umo:a", smis_id=1579)), 1)
+        self.assertEqual(self.storage.get_rule_state(first["id"])["alert_active"], 0)
+
+        unchanged = manager.add_rule("umo:a", 1579, "steam", 5.40)
+        self.assertEqual(unchanged["id"], first["id"])
+        self.assertEqual(unchanged["action"], "unchanged")
+        self.assertEqual(len(self.storage.list_rules(umo="umo:a", smis_id=1579)), 1)
 
     def test_item_limit_is_enforced_before_source_request(self):
         for smis_id in range(1, 21):

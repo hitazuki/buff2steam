@@ -251,7 +251,12 @@ class MonitoringManager:
             "steam_transaction_quantity": snapshot.steam_transaction_quantity,
             "ratio": snapshot.calculated_ratio,
             "platforms": [
-                {"name": name, "sell_price": price, "sell_num": count}
+                {
+                    "name": name,
+                    "sell_price": price,
+                    "sell_num": count,
+                    "is_lowest": lowest is not None and price == lowest[1],
+                }
                 for name, price, count in snapshot.platform_quotes
             ],
             "lowest_platform": (

@@ -85,11 +85,21 @@ class Buff2SteamPlugin(Star):
             f"即时挂刀比例：{ratio_text} {marker}",
         ]
         lowest = data.get("lowest_platform")
-        if lowest:
-            lines.append(
-                f"最低平台：{lowest['name']} ¥{float(lowest['sell_price']):.2f}"
-                f"（在售 {lowest.get('sell_num') or 0}）"
-            )
+        platforms = data.get("platforms") or []
+        if platforms:
+            lines.append("平台售价：")
+            for platform in platforms:
+                tags = []
+                if platform.get("is_lowest"):
+                    tags.append("最低")
+                tags.append(f"在售 {platform.get('sell_num') or 0}")
+                prefix = "★" if platform.get("is_lowest") else "-"
+                lines.append(
+                    f"{prefix} {platform['name']}：¥{float(platform['sell_price']):.2f}"
+                    f"（{'，'.join(tags)}）"
+                )
+        else:
+            lines.append("平台售价：暂无有效数据")
         lines.extend([
             f"Steam 售价：¥{float(data['steam_sell_price'] or 0):.2f}",
             f"Steam 预计到手：¥{float(data['steam_net'] or 0):.2f}",
@@ -219,9 +229,26 @@ class Buff2SteamPlugin(Star):
                 "rule_type": rule_type.lower(), "threshold": threshold,
             })
             unit = "%" if data["rule_type"] in {"ratio", "t7"} else "元"
+            action = data.get("action", "created")
+            if action == "updated":
+                previous = float(data["previous_threshold"])
+                result = (
+                    f"规则已更新：#{data['id']} {data['cn_name']}\n"
+                    f"类型：{data['rule_type']} · 阈值：{previous:g}{unit} → "
+                    f"{float(data['threshold']):g}{unit}"
+                )
+            elif action == "unchanged":
+                result = (
+                    f"规则已存在：#{data['id']} {data['cn_name']}\n"
+                    f"类型：{data['rule_type']} · 阈值：{float(data['threshold']):g}{unit}"
+                )
+            else:
+                result = (
+                    f"规则已添加：#{data['id']} {data['cn_name']}\n"
+                    f"类型：{data['rule_type']} · 阈值：{float(data['threshold']):g}{unit}"
+                )
             yield event.plain_result(
-                f"规则已添加：#{data['id']} {data['cn_name']}\n"
-                f"类型：{data['rule_type']} · 阈值：{float(data['threshold']):g}{unit}"
+                result
             )
         except ServiceClientError as exc:
             yield event.plain_result(f"添加失败：{exc}")

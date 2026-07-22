@@ -268,12 +268,52 @@ class MonitorStorage:
     def add_rule(self, smis_id: int, umo: str, rule_type: str, threshold: float) -> dict:
         now = self._utcnow()
         with self.connect() as conn:
-            cursor = conn.execute("""
-                INSERT INTO rules(smis_id,umo,rule_type,threshold,enabled,created_at,updated_at)
-                VALUES(?,?,?,?,1,?,?)
-            """, (int(smis_id), umo, rule_type, float(threshold), now, now))
-            rule_id = int(cursor.lastrowid)
-        return self.get_rule(rule_id)
+            existing = conn.execute("""
+                SELECT id,threshold FROM rules
+                WHERE smis_id=? AND umo=? AND rule_type=? AND enabled=1
+                ORDER BY id
+            """, (int(smis_id), umo, rule_type)).fetchall()
+            if existing:
+                rule_id = int(existing[0]["id"])
+                previous_threshold = float(existing[0]["threshold"])
+                duplicate_ids = [int(row["id"]) for row in existing[1:]]
+                changed = previous_threshold != float(threshold) or bool(duplicate_ids)
+                if changed:
+                    conn.execute(
+                        "UPDATE rules SET threshold=?,updated_at=? WHERE id=?",
+                        (float(threshold), now, rule_id),
+                    )
+                    affected_ids = [rule_id, *duplicate_ids]
+                    placeholders = ",".join("?" for _ in affected_ids)
+                    conn.execute(
+                        f"DELETE FROM rule_states WHERE rule_id IN ({placeholders})",
+                        affected_ids,
+                    )
+                    for affected_id in affected_ids:
+                        conn.execute(
+                            "DELETE FROM notification_outbox WHERE status='pending' AND umo=? "
+                            "AND signal_key LIKE ?",
+                            (umo, f"rule:{affected_id}:%"),
+                        )
+                    if duplicate_ids:
+                        duplicate_placeholders = ",".join("?" for _ in duplicate_ids)
+                        conn.execute(
+                            f"DELETE FROM rules WHERE id IN ({duplicate_placeholders})",
+                            duplicate_ids,
+                        )
+                action = "updated" if changed else "unchanged"
+            else:
+                cursor = conn.execute("""
+                    INSERT INTO rules(smis_id,umo,rule_type,threshold,enabled,created_at,updated_at)
+                    VALUES(?,?,?,?,1,?,?)
+                """, (int(smis_id), umo, rule_type, float(threshold), now, now))
+                rule_id = int(cursor.lastrowid)
+                previous_threshold = None
+                action = "created"
+        rule = self.get_rule(rule_id)
+        rule["action"] = action
+        rule["previous_threshold"] = previous_threshold
+        return rule
 
     def get_rule(self, rule_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
