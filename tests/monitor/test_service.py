@@ -1,0 +1,485 @@
+import unittest
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from fastapi.testclient import TestClient
+
+from steam_skin_ops.monitor.api import create_app
+from steam_skin_ops.monitor.events import NotifyResult
+from steam_skin_ops.monitor.integrations.astrbot import AstrBotNotifier
+from steam_skin_ops.monitor.manager import MonitoringManager
+from steam_skin_ops.monitor.market import MarketSnapshot, steam_net_amount
+from steam_skin_ops.monitor.repository import MonitorStorage
+
+
+ITEM = {
+    "smis_id": 1579,
+    "item_key": "smis:1579",
+    "appid": 730,
+    "name": "Fracture Case",
+    "name_zh": "裂空武器箱",
+}
+
+
+def snapshot(ratio=0.70, offset=0):
+    now = datetime.now(timezone.utc) + timedelta(seconds=offset)
+    steam_price = 5.34
+    return MarketSnapshot(
+        item_key=ITEM["item_key"], smis_id=1579, appid=730,
+        name=ITEM["name"], name_zh=ITEM["name_zh"],
+        observed_at=now, source_updated_at=now,
+        buff_sell_price=round(steam_net_amount(steam_price) * ratio, 2),
+        buff_sell_num=0, uuyp_sell_price=0, uuyp_sell_num=0,
+        c5_sell_price=0, c5_sell_num=0, igxe_sell_price=0, igxe_sell_num=0,
+        eco_sell_price=0, eco_sell_num=0,
+        steam_sell_price=steam_price, steam_sell_num=0,
+        steam_transaction_quantity=0, buff_to_steam_ratio=ratio,
+    )
+
+
+class FakeSource:
+    def __init__(self, ratios=None):
+        self.ratios = list(ratios or [0.70])
+        self.current_calls = 0
+
+    def fetch_metadata(self, smis_id):
+        if int(smis_id) != 1579:
+            raise RuntimeError("not found")
+        return dict(ITEM)
+
+    def search_items(self, query, limit=10):
+        if "裂空" not in query and "Fracture" not in query:
+            return []
+        return [{"smis_id": 1579, "name_zh": "裂空武器箱", "rarity": "普通级"}][:limit]
+
+    def fetch_current(self, item):
+        self.current_calls += 1
+        ratio = self.ratios.pop(0) if len(self.ratios) > 1 else self.ratios[0]
+        if isinstance(ratio, Exception):
+            raise ratio
+        return snapshot(float(ratio), self.current_calls)
+
+    def fetch_history(self, item, days):
+        result = []
+        for index in range(13):
+            history = snapshot(0.74, -(index * 12 * 3600))
+            result.append(MarketSnapshot(**{**history.__dict__, "kind": "history"}))
+        return result
+
+
+class StaleSource(FakeSource):
+    def fetch_current(self, item):
+        value = super().fetch_current(item)
+        return MarketSnapshot(**{
+            **value.__dict__,
+            "source_updated_at": datetime.now(timezone.utc) - timedelta(minutes=30),
+        })
+
+
+class FakeNotifier:
+    def __init__(self, failing_umo=None):
+        self.name = "fake"
+        self.failing_umo = failing_umo
+        self.messages = []
+
+    def send_to(self, umo, title, content):
+        self.messages.append((umo, title, content))
+        if umo == self.failing_umo:
+            return NotifyResult(False, "failed")
+        return NotifyResult(True, "ok")
+
+
+class FakeRuntime:
+    def __init__(self):
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def status(self):
+        return {"running": self.started, "items": 1, "rules": 1, "outbox": {}}
+
+
+class ServiceTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.storage = MonitorStorage(Path(self.tmp.name) / "monitor.db")
+        self.storage.upsert_item(ITEM)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def manager(self, ratios=None, notifier=None, cache=60):
+        return MonitoringManager(
+            self.storage, FakeSource(ratios), notifier or FakeNotifier(),
+            quote_cache_seconds=cache,
+        )
+
+    def test_existing_snapshot_table_gets_platform_columns(self):
+        legacy_path = Path(self.tmp.name) / "legacy.db"
+        connection = sqlite3.connect(legacy_path)
+        connection.execute("""
+            CREATE TABLE market_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+                item_key TEXT NOT NULL, smis_id INTEGER NOT NULL, appid INTEGER NOT NULL,
+                name TEXT NOT NULL, name_zh TEXT NOT NULL, observed_at TEXT NOT NULL,
+                source_updated_at TEXT NOT NULL, kind TEXT NOT NULL,
+                buff_sell_price REAL, buff_sell_num INTEGER, steam_sell_price REAL,
+                steam_sell_num INTEGER, steam_transaction_quantity INTEGER,
+                buff_to_steam_ratio REAL,
+                UNIQUE(source,item_key,observed_at,kind)
+            )
+        """)
+        connection.commit()
+        connection.close()
+        migrated = MonitorStorage(legacy_path)
+        with migrated.connect() as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(market_snapshots)")}
+        self.assertTrue({"uuyp_sell_price", "c5_sell_price", "igxe_sell_price", "eco_sell_price"}.issubset(columns))
+
+    def test_v2_database_migrates_recipient_and_outbox(self):
+        legacy_path = Path(self.tmp.name) / "v2.db"
+        connection = sqlite3.connect(legacy_path)
+        connection.executescript("""
+            CREATE TABLE rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, smis_id INTEGER NOT NULL,
+                umo TEXT NOT NULL, rule_type TEXT NOT NULL, threshold REAL NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE rule_health (
+                smis_id INTEGER NOT NULL, umo TEXT NOT NULL,
+                fetch_failures INTEGER NOT NULL DEFAULT 0,
+                health_alerted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+                PRIMARY KEY(smis_id,umo)
+            );
+            CREATE TABLE notification_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, signal_key TEXT NOT NULL,
+                umo TEXT NOT NULL, event_type TEXT NOT NULL, title TEXT NOT NULL,
+                content TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL,
+                last_error TEXT, next_attempt_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                sent_at TEXT, UNIQUE(signal_key,umo)
+            );
+            INSERT INTO rules VALUES(1,1579,'recipient:a','steam',5.4,1,'now','now');
+            INSERT INTO notification_outbox VALUES(
+                1,'signal:a','recipient:a','test','title','body','sent',0,NULL,
+                'now','now','now'
+            );
+        """)
+        connection.commit()
+        connection.close()
+
+        migrated = MonitorStorage(legacy_path)
+        migrated.upsert_item(ITEM)
+
+        self.assertEqual(migrated.get_rule(1)["recipient_key"], "recipient:a")
+        event = migrated.list_events("recipient:a", acknowledged=None)[0]
+        self.assertEqual(event["delivery_status"], "sent")
+
+    def test_quote_uses_sixty_second_cache(self):
+        manager = self.manager([0.70])
+        first = manager.quote("1579")
+        second = manager.quote("裂空")
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(manager.source.current_calls, 1)
+
+    def test_quote_by_id_queries_entire_market_without_registering_item(self):
+        with self.storage.connect() as conn:
+            conn.execute("DELETE FROM items WHERE smis_id=1579")
+        manager = self.manager([0.70])
+
+        result = manager.quote("1579")
+
+        self.assertEqual(result["smis_id"], 1579)
+        self.assertFalse(result["cached"])
+        self.assertIsNone(self.storage.get_item(1579))
+        self.assertEqual(self.storage.count_items(), 0)
+
+    def test_quote_by_name_queries_entire_market(self):
+        with self.storage.connect() as conn:
+            conn.execute("DELETE FROM items WHERE smis_id=1579")
+        manager = self.manager([0.70])
+
+        result = manager.quote("裂空")
+
+        self.assertEqual(result["name"], "Fracture Case")
+        self.assertEqual(result["name_zh"], "裂空武器箱")
+        self.assertEqual(manager.source.current_calls, 1)
+
+    def test_quote_returns_all_available_platforms_and_marks_every_lowest(self):
+        manager = self.manager()
+        current = snapshot()
+        manager.source.fetch_current = lambda item: MarketSnapshot(**{
+            **current.__dict__,
+            "buff_sell_price": 3.30, "buff_sell_num": 100,
+            "uuyp_sell_price": 3.20, "uuyp_sell_num": 80,
+            "c5_sell_price": 3.10, "c5_sell_num": 60,
+            "igxe_sell_price": 3.40, "igxe_sell_num": 40,
+            "eco_sell_price": 3.10, "eco_sell_num": 20,
+        })
+
+        result = manager.quote("1579")
+
+        self.assertEqual(
+            [row["name"] for row in result["platforms"]],
+            ["BUFF", "悠悠有品", "C5", "IGXE", "ECO"],
+        )
+        self.assertEqual(
+            [row["name"] for row in result["platforms"] if row["is_lowest"]],
+            ["C5", "ECO"],
+        )
+
+    def test_search_uses_smis_catalog(self):
+        results = self.manager().search_items("裂空", limit=5)
+        self.assertEqual(results, [{
+            "smis_id": 1579, "name_zh": "裂空武器箱", "rarity": "普通级",
+        }])
+
+    def test_search_failure_uses_service_error_envelope(self):
+        manager = self.manager()
+        manager.source.search_items = lambda query, limit=10: (_ for _ in ()).throw(
+            RuntimeError("down")
+        )
+        app = create_app(manager=manager, runtime=FakeRuntime(), service_token="secret")
+        with TestClient(app) as client:
+            response = client.get(
+                "/v2/market/search",
+                headers={"Authorization": "Bearer secret"},
+                params={"q": "裂空"},
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "smis_search_failed")
+
+    def test_stale_quote_falls_back_when_source_fails(self):
+        self.storage.save_snapshots([snapshot(0.70, -120)])
+        manager = self.manager([RuntimeError("down")], cache=1)
+        result = manager.quote("1579")
+        self.assertTrue(result["stale"])
+        self.assertIn("实时刷新失败", result["warning"])
+
+    def test_ratio_rules_are_session_isolated_and_rearm_after_three_percent_margin(self):
+        notifier = FakeNotifier()
+        manager = self.manager([0.70, 0.70, 0.75, 0.75, 0.70, 0.70], notifier)
+        first = self.storage.add_rule(1579, "umo:a", "ratio", 72)
+        second = self.storage.add_rule(1579, "umo:b", "ratio", 68)
+        for _ in range(6):
+            manager.run_cycle(max_workers=1)
+        recipients = [message[0] for message in notifier.messages]
+        self.assertEqual(recipients, ["umo:a", "umo:a"])
+        self.assertEqual(self.storage.get_rule_state(second["id"])["alert_active"], 0)
+        self.assertEqual(self.storage.get_rule_state(first["id"])["alert_active"], 1)
+
+    def test_lowest_platform_ignores_liquidity(self):
+        value = snapshot()
+        value = MarketSnapshot(**{
+            **value.__dict__, "buff_sell_price": 3.30, "buff_sell_num": 1000,
+            "c5_sell_price": 3.10, "c5_sell_num": 0,
+            "uuyp_sell_price": 3.20, "uuyp_sell_num": 1,
+        })
+        self.assertEqual(value.lowest_platform, ("C5", 3.10, 0))
+        self.assertEqual(value.calculated_ratio, round(3.10 / value.steam_net, 4))
+
+    def test_t7_rule_uses_seven_day_steam_net_p25(self):
+        notifier = FakeNotifier()
+        manager = self.manager([0.70, 0.70], notifier)
+        rule = manager.add_rule("umo:a", 1579, "t7", 72)
+        manager.run_cycle(max_workers=1)
+        manager.run_cycle(max_workers=1)
+        state = self.storage.get_rule_state(rule["id"])
+        self.assertEqual(state["alert_active"], 1)
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("T+7挂刀", notifier.messages[0][1])
+
+    def test_platform_and_steam_rules_trigger_without_volume(self):
+        notifier = FakeNotifier()
+        manager = self.manager([0.70, 0.70], notifier)
+        self.storage.add_rule(1579, "umo:a", "platform", 3.30)
+        self.storage.add_rule(1579, "umo:a", "steam", 5.30)
+        manager.run_cycle(max_workers=1)
+        manager.run_cycle(max_workers=1)
+        self.assertEqual({message[1].split("】", 1)[0] + "】" for message in notifier.messages}, {
+            "【平台到价】", "【Steam清仓】",
+        })
+
+    def test_outbox_failure_isolated_by_umo(self):
+        notifier = FakeNotifier(failing_umo="umo:b")
+        manager = self.manager(notifier=notifier)
+        self.storage.enqueue_notification(
+            "sig:a", "umo:a", "test", "title", "body", driver="fake"
+        )
+        self.storage.enqueue_notification(
+            "sig:b", "umo:b", "test", "title", "body", driver="fake"
+        )
+        result = manager.dispatch_outbox()
+        self.assertEqual(result, {"sent": 1, "failed": 1})
+        self.assertEqual(self.storage.outbox_counts(), {"pending": 1, "sent": 1})
+
+    def test_stale_source_time_does_not_trigger_health_failure(self):
+        notifier = FakeNotifier()
+        manager = MonitoringManager(self.storage, StaleSource([0.70]), notifier)
+        self.storage.add_rule(1579, "umo:a", "ratio", 72)
+        for _ in range(3):
+            manager.run_cycle(max_workers=1)
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("即时挂刀", notifier.messages[0][1])
+        state = self.storage.get_health_state(1579, "umo:a")
+        self.assertEqual(state["fetch_failures"], 0)
+        self.assertEqual(state["health_alerted"], 0)
+
+    def test_three_real_request_failures_trigger_health_alert(self):
+        notifier = FakeNotifier()
+        manager = self.manager([RuntimeError("down")] * 3, notifier)
+        self.storage.add_rule(1579, "umo:a", "ratio", 72)
+        for _ in range(3):
+            manager.run_cycle(max_workers=1)
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("监控异常", notifier.messages[0][1])
+
+    def test_api_auth_crud_and_validation_envelope(self):
+        manager = self.manager([0.70])
+        app = create_app(manager=manager, runtime=FakeRuntime(), service_token="secret")
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/v2/monitor/items").status_code, 401)
+            headers = {"Authorization": "Bearer secret"}
+            search_response = client.get(
+                "/v2/market/search", headers=headers, params={"q": "裂空"}
+            )
+            self.assertEqual(search_response.status_code, 200)
+            self.assertEqual(search_response.json()["data"][0]["smis_id"], 1579)
+            response = client.post("/v2/rules", headers=headers, json={
+                "recipient_key": "astrQQ:FriendMessage:test", "smis_id": 1579,
+                "rule_type": "ratio", "threshold": 72,
+            })
+            self.assertEqual(response.status_code, 200, response.text)
+            rule_id = response.json()["data"]["id"]
+            listed = client.get(
+                "/v2/rules", headers=headers,
+                params={"recipient_key": "astrQQ:FriendMessage:test"},
+            )
+            self.assertEqual(listed.json()["data"][0]["rule_type"], "ratio")
+            quote_response = client.get(
+                "/v2/market/quote", headers=headers, params={"q": "1579"}
+            )
+            self.assertTrue(quote_response.json()["ok"])
+            bad = client.patch(f"/v2/rules/{rule_id}", headers=headers, json={
+                "recipient_key": "astrQQ:FriendMessage:test", "threshold": 0,
+            })
+            self.assertEqual(bad.status_code, 422)
+            self.assertEqual(bad.json()["error"]["code"], "validation_error")
+
+    def test_event_api_persists_and_acknowledges_without_astrbot(self):
+        manager = self.manager()
+        app = create_app(manager=manager, runtime=FakeRuntime(), service_token="secret")
+        headers = {"Authorization": "Bearer secret"}
+        recipient = "standalone:local"
+        with TestClient(app) as client:
+            created = client.post(
+                "/v2/events/test", headers=headers, json={"recipient_key": recipient}
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            event_id = created.json()["data"]["id"]
+            listed = client.get(
+                "/v2/events", headers=headers,
+                params={"recipient_key": recipient, "acknowledged": "false"},
+            )
+            self.assertEqual([row["id"] for row in listed.json()["data"]], [event_id])
+            acknowledged = client.post(
+                f"/v2/events/{event_id}/ack", headers=headers,
+                json={"recipient_key": recipient},
+            )
+            self.assertIsNotNone(acknowledged.json()["data"]["acknowledged_at"])
+            empty = client.get(
+                "/v2/events", headers=headers,
+                params={"recipient_key": recipient, "acknowledged": "false"},
+            )
+            self.assertEqual(empty.json()["data"], [])
+
+    def test_market_history_api_is_independent_of_recipient(self):
+        manager = self.manager()
+        app = create_app(manager=manager, runtime=FakeRuntime(), service_token="secret")
+        with TestClient(app) as client:
+            response = client.get(
+                "/v2/market/history",
+                headers={"Authorization": "Bearer secret"},
+                params={"q": "1579", "days": 7},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["smis_id"], 1579)
+        self.assertEqual(len(response.json()["data"]["points"]), 13)
+
+    def test_adding_same_rule_updates_existing_rule_and_resets_state(self):
+        manager = self.manager()
+        first = manager.add_rule("umo:a", 1579, "steam", 5.50)
+        self.assertEqual(first["action"], "created")
+        self.storage.update_rule_state(
+            first["id"], alert_active=1, qualifying_count=2, status="active"
+        )
+
+        second = manager.add_rule("umo:a", 1579, "steam", 5.40)
+
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual(second["action"], "updated")
+        self.assertEqual(second["previous_threshold"], 5.50)
+        self.assertEqual(second["threshold"], 5.40)
+        self.assertEqual(
+            len(self.storage.list_rules(recipient_key="umo:a", smis_id=1579)), 1
+        )
+        self.assertEqual(self.storage.get_rule_state(first["id"])["alert_active"], 0)
+
+        unchanged = manager.add_rule("umo:a", 1579, "steam", 5.40)
+        self.assertEqual(unchanged["id"], first["id"])
+        self.assertEqual(unchanged["action"], "unchanged")
+        self.assertEqual(
+            len(self.storage.list_rules(recipient_key="umo:a", smis_id=1579)), 1
+        )
+
+    def test_item_limit_is_enforced_before_source_request(self):
+        for smis_id in range(1, 21):
+            self.storage.upsert_item({
+                "smis_id": smis_id,
+                "item_key": f"smis:{smis_id}",
+                "appid": 730,
+                "name": f"Item {smis_id}",
+                "name_zh": f"饰品 {smis_id}",
+            })
+            self.storage.add_rule(smis_id, "umo:test", "ratio", 72)
+        manager = self.manager()
+        with self.assertRaisesRegex(Exception, "最多只能监控 20 个饰品"):
+            manager.add_rule("umo:test", 9999, "ratio", 72)
+
+    def test_removing_last_rule_releases_item_slot(self):
+        rule = self.storage.add_rule(1579, "umo:a", "ratio", 72)
+        manager = self.manager()
+        manager.remove_rule("umo:a", rule["id"])
+        self.assertIsNone(self.storage.get_item(1579))
+
+
+class AstrBotNotifierTestCase(unittest.TestCase):
+    def test_sends_expected_openapi_payload(self):
+        from unittest.mock import Mock
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"status": "ok", "data": {}}
+        session = Mock()
+        session.post.return_value = response
+        notifier = AstrBotNotifier(
+            "http://astrbot:6185", "abk_test", session=session
+        )
+        result = notifier.send_to("astrQQ:FriendMessage:test", "标题", "正文")
+        self.assertTrue(result.success)
+        call = session.post.call_args
+        self.assertEqual(call.kwargs["headers"], {"X-API-Key": "abk_test"})
+        self.assertEqual(call.kwargs["json"], {
+            "umo": "astrQQ:FriendMessage:test", "message": "标题\n正文",
+        })
+
+
+if __name__ == "__main__":
+    unittest.main()

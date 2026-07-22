@@ -1,0 +1,18 @@
+{
+  "service_base_url": {
+    "description": "steam-skin-ops 服务地址",
+    "type": "string",
+    "default": "http://steam-skin-ops:8080"
+  },
+  "service_token": {
+    "description": "steam-skin-ops 服务令牌",
+    "type": "string",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "timeout_seconds": {
+    "description": "HTTP 请求超时秒数",
+    "type": "int",
+    "default": 10
+  }
+}

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steam-skin-ops"
+version = "3.0.0"
+description = "Steam skin profit analytics and standalone market monitoring"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+
+[project.optional-dependencies]
+profit = [
+  "PyYAML>=6.0.1",
+  "requests>=2.31.0",
+  "rich>=13.7.0",
+]
+monitor = [
+  "fastapi>=0.115.0",
+  "pycryptodome>=3.20.0",
+  "requests>=2.31.0",
+  "uvicorn[standard]>=0.30.0",
+]
+dev = [
+  "PyYAML>=6.0.1",
+  "fastapi>=0.115.0",
+  "httpx>=0.27.0,<0.28",
+  "pycryptodome>=3.20.0",
+  "requests>=2.31.0",
+  "rich>=13.7.0",
+  "uvicorn[standard]>=0.30.0",
+]
+
+[project.scripts]
+steam-skin-profit = "steam_skin_ops.profit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

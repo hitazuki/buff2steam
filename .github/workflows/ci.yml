@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install development dependencies
+        run: python -m pip install ".[dev]"
+
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Validate Compose configurations
+        shell: bash
+        run: |
+          cp .env.steam-skin-ops.example .env.steam-skin-ops
+          docker compose -f compose.yml config --quiet
+          docker compose -f compose.yml -f compose.astrbot.yml config --quiet
+
+      - name: Build monitor-only image
+        run: docker build --tag steam-skin-ops:test .
+
+      - name: Verify profit package is absent from image
+        run: >-
+          docker run --rm steam-skin-ops:test python -c
+          "import importlib.util; import steam_skin_ops.monitor;
+          assert importlib.util.find_spec('steam_skin_ops.profit') is None"

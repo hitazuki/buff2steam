@@ -1,0 +1,7 @@
+name: astrbot_plugin_steam_skin_ops
+id: astrbot_plugin_steam_skin_ops
+display_name: Steam Skin Ops 饰品监控
+author: hitazuki
+version: "3.0.0"
+description: 通过统一规则监控 T+7 挂刀机会和 Steam 库存清理目标。
+repo: "https://github.com/hitazuki/steam-skin-ops"
