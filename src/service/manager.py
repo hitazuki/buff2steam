@@ -122,26 +122,65 @@ class MonitoringManager:
         if value < 1 or value > 100:
             raise ServiceError(422, "invalid_ratio", "阈值百分比必须在 1 到 100 之间")
 
-    def _resolve_one(self, query: str) -> dict:
+    def _resolve_local_item(self, query: str) -> dict | None:
         matches = self.storage.resolve_items(query)
         if not matches:
-            raise ServiceError(404, "item_not_found", "未找到已配置的饰品")
+            return None
+        if query.isdigit():
+            return matches[0]
         exact = [
             row for row in matches
             if query.casefold() in {str(row["hash_name"]).casefold(), str(row["cn_name"]).casefold()}
         ]
         if len(exact) == 1:
             return exact[0]
-        if len(matches) > 1:
-            candidates = [
-                {"smis_id": row["smis_id"], "name": row["hash_name"], "name_zh": row["cn_name"]}
-                for row in matches[:10]
-            ]
-            raise ServiceError(409, "ambiguous_item", "名称匹配到多个饰品", candidates)
-        return matches[0]
+        return None
+
+    def _resolve_market_item(self, query: str) -> dict:
+        try:
+            if query.isdigit():
+                metadata = self.source.fetch_metadata(int(query))
+            else:
+                matches = self.search_items(query, limit=10)
+                exact = [
+                    row for row in matches
+                    if str(row.get("name_zh") or "").casefold() == query.casefold()
+                ]
+                candidates = exact if exact else matches
+                if not candidates:
+                    raise ServiceError(
+                        404, "item_not_found", "SMIS 全市场未找到匹配饰品"
+                    )
+                if len(candidates) > 1:
+                    raise ServiceError(
+                        409,
+                        "ambiguous_item",
+                        "名称匹配到多个饰品，请使用 SMIS ID 查询",
+                        candidates,
+                    )
+                metadata = self.source.fetch_metadata(int(candidates[0]["smis_id"]))
+        except ServiceError:
+            raise
+        except Exception as exc:
+            logger.warning("SMIS 全市场饰品解析失败：%s", exc)
+            raise ServiceError(
+                503, "source_unavailable", f"SMIS 饰品信息获取失败：{exc}"
+            ) from exc
+        return {
+            "smis_id": int(metadata["smis_id"]),
+            "item_key": str(metadata["item_key"]),
+            "appid": int(metadata["appid"]),
+            "hash_name": str(metadata["name"]),
+            "cn_name": str(metadata["name_zh"]),
+        }
+
+    def _resolve_quote_item(self, query: str) -> dict:
+        query = query.strip()
+        local = self._resolve_local_item(query)
+        return local if local is not None else self._resolve_market_item(query)
 
     def quote(self, query: str) -> dict:
-        item_row = self._resolve_one(query)
+        item_row = self._resolve_quote_item(query)
         item = item_from_row(item_row)
         latest = self.storage.latest_snapshot(item["item_key"])
         if latest and self._snapshot_age_seconds(latest) <= self.quote_cache_seconds:

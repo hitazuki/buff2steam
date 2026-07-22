@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
 
 HELP_TEXT = """buff2steam 命令：
 /skin search <名称> - 搜索 SMIS 饰品 ID
-/skin quote <SMIS_ID|名称> - 查询已配置饰品
+/skin quote <SMIS_ID|名称> - 全市场即时查询
 /skin items - 列出已配置饰品
 /skin watch list - 当前会话订阅
 /skin watch add <SMIS_ID|名称> [阈值百分比]
@@ -33,7 +33,7 @@ class ServiceClientError(RuntimeError):
     "astrbot_plugin_buff2steam",
     "buff2steam",
     "饰品行情查询与按会话监控",
-    "1.1.0",
+    "1.2.0",
 )
 class Buff2SteamPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -60,7 +60,11 @@ class Buff2SteamPlugin(Star):
             message = error.get("message") or f"HTTP {response.status_code}"
             candidates = error.get("data")
             if candidates:
-                lines = [f"{row['smis_id']} - {row['name_zh']} / {row['name']}" for row in candidates]
+                lines = []
+                for row in candidates:
+                    name = row.get("name")
+                    suffix = f" / {name}" if name else ""
+                    lines.append(f"{row['smis_id']} - {row['name_zh']}{suffix}")
                 message = f"{message}\n" + "\n".join(lines)
             raise ServiceClientError(message)
         return payload.get("data")
@@ -99,7 +103,7 @@ class Buff2SteamPlugin(Star):
 
     @skin.command("quote")
     async def quote_item(self, event: AstrMessageEvent, query: str):
-        """查询已配置饰品。"""
+        """即时查询 SMIS 全市场饰品。"""
         try:
             data = await self._request("GET", "/v1/quote", params={"q": query})
             yield event.plain_result(self._format_quote(data))

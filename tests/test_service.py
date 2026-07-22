@@ -120,6 +120,29 @@ class ServiceTestCase(unittest.TestCase):
         self.assertTrue(second["cached"])
         self.assertEqual(manager.source.current_calls, 1)
 
+    def test_quote_by_id_queries_entire_market_without_registering_item(self):
+        with self.storage.connect() as conn:
+            conn.execute("DELETE FROM items WHERE smis_id=1579")
+        manager = self.manager([0.70])
+
+        result = manager.quote("1579")
+
+        self.assertEqual(result["smis_id"], 1579)
+        self.assertFalse(result["cached"])
+        self.assertIsNone(self.storage.get_item(1579))
+        self.assertEqual(self.storage.count_items(), 0)
+
+    def test_quote_by_name_queries_entire_market(self):
+        with self.storage.connect() as conn:
+            conn.execute("DELETE FROM items WHERE smis_id=1579")
+        manager = self.manager([0.70])
+
+        result = manager.quote("裂空")
+
+        self.assertEqual(result["name"], "Fracture Case")
+        self.assertEqual(result["name_zh"], "裂空武器箱")
+        self.assertEqual(manager.source.current_calls, 1)
+
     def test_search_uses_smis_catalog(self):
         results = self.manager().search_items("裂空", limit=5)
         self.assertEqual(results, [{
