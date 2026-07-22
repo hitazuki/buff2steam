@@ -9,6 +9,9 @@ from typing import Any, Iterator
 from .market import MarketSnapshot
 
 
+SCHEMA_VERSION = 3
+
+
 DEFAULT_STATE = {
     "alert_active": 0,
     "qualifying_count": 0,
@@ -175,18 +178,17 @@ class MonitorStorage:
                     PRIMARY KEY(smis_id, recipient_key)
                 );
             """)
-            self._migrate_v3(conn)
-            existing = {
-                str(row[1]) for row in conn.execute("PRAGMA table_info(market_snapshots)")
-            }
-            for column in (
-                "uuyp_sell_price REAL", "uuyp_sell_num INTEGER",
-                "c5_sell_price REAL", "c5_sell_num INTEGER",
-                "igxe_sell_price REAL", "igxe_sell_num INTEGER",
-                "eco_sell_price REAL", "eco_sell_num INTEGER",
-            ):
-                if column.split()[0] not in existing:
-                    conn.execute(f"ALTER TABLE market_snapshots ADD COLUMN {column}")
+            version_row = conn.execute(
+                "SELECT value FROM metadata WHERE key='schema_version'"
+            ).fetchone()
+            current_version = int(version_row[0]) if version_row else 0
+            if current_version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"database schema v{current_version} is newer than supported "
+                    f"v{SCHEMA_VERSION}"
+                )
+            if current_version < SCHEMA_VERSION:
+                self._migrate_v3(conn)
 
     def _migrate_v3(self, conn: sqlite3.Connection) -> None:
         """Transactionally migrate v2 recipient and notification tables."""
@@ -229,6 +231,25 @@ class MonitorStorage:
             conn.execute("DROP INDEX IF EXISTS idx_rules_umo")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_rules_recipient "
                          "ON rules(recipient_key, enabled)")
+
+            snapshot_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(market_snapshots)")
+            }
+            for column in (
+                "uuyp_sell_price REAL", "uuyp_sell_num INTEGER",
+                "c5_sell_price REAL", "c5_sell_num INTEGER",
+                "igxe_sell_price REAL", "igxe_sell_num INTEGER",
+                "eco_sell_price REAL", "eco_sell_num INTEGER",
+            ):
+                if column.split()[0] not in snapshot_columns:
+                    conn.execute(f"ALTER TABLE market_snapshots ADD COLUMN {column}")
+
+            now = self._utcnow()
+            conn.execute("""
+                INSERT INTO metadata(key,value,updated_at) VALUES('schema_version',?,?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value, updated_at=excluded.updated_at
+            """, (str(SCHEMA_VERSION), now))
             conn.execute("RELEASE SAVEPOINT migrate_v3")
         except Exception:
             conn.execute("ROLLBACK TO SAVEPOINT migrate_v3")
