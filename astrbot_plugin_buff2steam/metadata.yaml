@@ -1,7 +1,0 @@
-name: astrbot_plugin_buff2steam
-id: astrbot_plugin_buff2steam
-display_name: buff2steam 饰品监控
-author: buff2steam
-version: "2.0.0"
-description: 通过统一规则监控 T+7 挂刀机会和 Steam 库存清理目标。
-repo: ""

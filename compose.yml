@@ -1,28 +1,24 @@
 services:
-  buff2steam:
-    image: docker.io/hitazuki/buff2steam:latest
-    container_name: buff2steam
+  steam-skin-ops:
+    image: docker.io/hitazuki/steam-skin-ops:latest
+    container_name: steam-skin-ops
     restart: unless-stopped
     env_file:
-      - .env.buff2steam
+      - .env.steam-skin-ops
     environment:
-      ASTRBOT_BASE_URL: http://astrbot:6185
-      ASTRBOT_MESSAGE_PATH: /api/v1/im/message
-      ASTRBOT_TIMEOUT_SECONDS: "10"
-      BUFF2STEAM_DATABASE: /app/data/monitor.db
-      BUFF2STEAM_BACKUP_DIR: /app/data/backups
-      BUFF2STEAM_INTERVAL_SECONDS: "1800"
-      BUFF2STEAM_QUOTE_CACHE_SECONDS: "60"
-      BUFF2STEAM_MAX_ITEMS: "20"
+      STEAM_SKIN_OPS_ALERT_DRIVER: store
+      STEAM_SKIN_OPS_DATABASE: /app/data/monitor.db
+      STEAM_SKIN_OPS_BACKUP_DIR: /app/data/backups
+      STEAM_SKIN_OPS_INTERVAL_SECONDS: "1800"
+      STEAM_SKIN_OPS_QUOTE_CACHE_SECONDS: "60"
+      STEAM_SKIN_OPS_MAX_ITEMS: "20"
       SMIS_TIMEOUT_SECONDS: "15"
       SMIS_MAX_RETRIES: "3"
       TZ: Asia/Shanghai
-    expose:
-      - "8080"
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/app/data
-    networks:
-      - astrbot-internal
     mem_limit: 512m
     cpus: 0.50
     logging:
@@ -30,7 +26,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-networks:
-  astrbot-internal:
-    external: true

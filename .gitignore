@@ -1,7 +1,8 @@
 # 敏感配置（含Cookie，绝对不能提交）
 config.yaml
+config/profit.yaml
 .env
-.env.buff2steam
+.env.steam-skin-ops
 
 # 缓存数据
 data/
