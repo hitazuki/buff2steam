@@ -20,7 +20,7 @@ services:
     expose:
       - "8080"
     volumes:
-      - buff2steam-data:/app/data
+      - ./data:/app/data
     networks:
       - astrbot-internal
     mem_limit: 512m
@@ -30,9 +30,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  buff2steam-data:
 
 networks:
   astrbot-internal:

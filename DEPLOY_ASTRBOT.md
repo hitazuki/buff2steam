@@ -71,7 +71,14 @@ docker compose -f compose.buff2steam.yml restart buff2steam
 docker compose -f compose.buff2steam.yml down
 ```
 
-数据库保存在命名卷 `buff2steam-data`，每日备份位于卷内 `/app/data/backups`，保留 7 天。
+数据库保存在部署目录的 `./data/monitor.db`，每日备份位于
+`./data/backups`，保留 7 天。容器以 UID `10001` 运行，首次启动前创建并授权目录：
+
+```bash
+mkdir -p data
+sudo chown -R 10001:10001 data
+sudo chmod 750 data
+```
 
 ## 6. DockerHub 自动发布
 
