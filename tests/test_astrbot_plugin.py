@@ -21,13 +21,13 @@ class AstrBotPluginContractTest(unittest.TestCase):
                 if isinstance(value, ast.Constant) and isinstance(value.value, str):
                     command_names.add(value.value)
         expected = {
-            "skin", "search", "quote", "items", "watch", "list", "add", "remove",
-            "threshold", "test", "status", "help",
+            "skin", "search", "quote", "items", "rule", "list", "add", "set",
+            "remove", "test", "status", "help",
         }
         self.assertTrue(expected.issubset(command_names))
         self.assertIn("event.unified_msg_origin", source)
         self.assertIn("filter.PermissionType.ADMIN", source)
-        self.assertIn('"/v1/search"', source)
+        self.assertIn('"/v1/rules"', source)
 
 
 if __name__ == "__main__":

@@ -23,15 +23,16 @@ logger = logging.getLogger(__name__)
 bearer = HTTPBearer(auto_error=False)
 
 
-class SubscriptionCreate(BaseModel):
+class RuleCreate(BaseModel):
     umo: str = Field(min_length=3, max_length=500)
     smis_id: int = Field(gt=0)
-    max_ratio_percent: float = Field(default=72, ge=1, le=100)
+    rule_type: str = Field(min_length=2, max_length=20)
+    threshold: float = Field(gt=0)
 
 
-class SubscriptionUpdate(BaseModel):
+class RuleUpdate(BaseModel):
     umo: str = Field(min_length=3, max_length=500)
-    max_ratio_percent: float = Field(ge=1, le=100)
+    threshold: float = Field(gt=0)
 
 
 class PushTest(BaseModel):
@@ -69,7 +70,7 @@ def create_app(
     if runtime is None:
         runtime = ServiceRuntime(
             manager,
-            interval_seconds=int(os.getenv("BUFF2STEAM_INTERVAL_SECONDS", "300")),
+            interval_seconds=int(os.getenv("BUFF2STEAM_INTERVAL_SECONDS", "1800")),
             backup_dir=Path(os.getenv("BUFF2STEAM_BACKUP_DIR", "./data/backups")),
         )
 
@@ -87,7 +88,7 @@ def create_app(
         yield
         runtime.stop()
 
-    app = FastAPI(title="buff2steam service", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="buff2steam service", version="2.0.0", lifespan=lifespan)
     app.state.manager = manager
     app.state.runtime = runtime
 
@@ -131,25 +132,28 @@ def create_app(
     async def quote_item(q: str = Query(min_length=1, max_length=200)):
         return ok(await run_in_threadpool(manager.quote, q))
 
-    @app.get("/v1/subscriptions", dependencies=[Depends(require_token)])
-    async def subscriptions(umo: str = Query(min_length=3, max_length=500)):
-        return ok(await run_in_threadpool(manager.list_subscriptions, umo))
+    @app.get("/v1/rules", dependencies=[Depends(require_token)])
+    async def rules(
+        umo: str = Query(min_length=3, max_length=500),
+        smis_id: int | None = Query(default=None, gt=0),
+    ):
+        return ok(await run_in_threadpool(manager.list_rules, umo, smis_id))
 
-    @app.post("/v1/subscriptions", dependencies=[Depends(require_token)])
-    async def add_subscription(body: SubscriptionCreate):
+    @app.post("/v1/rules", dependencies=[Depends(require_token)])
+    async def add_rule(body: RuleCreate):
         return ok(await run_in_threadpool(
-            manager.add_subscription, body.umo, body.smis_id, body.max_ratio_percent
+            manager.add_rule, body.umo, body.smis_id, body.rule_type, body.threshold
         ))
 
-    @app.patch("/v1/subscriptions/{smis_id}", dependencies=[Depends(require_token)])
-    async def update_subscription(smis_id: int, body: SubscriptionUpdate):
+    @app.patch("/v1/rules/{rule_id}", dependencies=[Depends(require_token)])
+    async def update_rule(rule_id: int, body: RuleUpdate):
         return ok(await run_in_threadpool(
-            manager.update_subscription, body.umo, smis_id, body.max_ratio_percent
+            manager.update_rule, body.umo, rule_id, body.threshold
         ))
 
-    @app.delete("/v1/subscriptions/{smis_id}", dependencies=[Depends(require_token)])
-    async def remove_subscription(smis_id: int, umo: str = Query(min_length=3, max_length=500)):
-        await run_in_threadpool(manager.remove_subscription, umo, smis_id)
+    @app.delete("/v1/rules/{rule_id}", dependencies=[Depends(require_token)])
+    async def remove_rule(rule_id: int, umo: str = Query(min_length=3, max_length=500)):
+        await run_in_threadpool(manager.remove_rule, umo, rule_id)
         return ok({"removed": True})
 
     @app.post("/v1/push/test", dependencies=[Depends(require_token)])

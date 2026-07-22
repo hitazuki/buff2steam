@@ -20,6 +20,19 @@ DEFAULT_STATE = {
     "pending_signal_key": None,
 }
 
+DEFAULT_RULE_STATE = {
+    "alert_active": 0,
+    "qualifying_count": 0,
+    "clearing_count": 0,
+    "last_value": None,
+    "last_baseline": None,
+    "last_observed_at": None,
+    "last_signal_at": None,
+    "status": "waiting",
+}
+
+DEFAULT_HEALTH_STATE = {"fetch_failures": 0, "health_alerted": 0}
+
 
 class MonitorStorage:
     def __init__(self, path: Path) -> None:
@@ -144,7 +157,50 @@ class MonitorStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_outbox_due
                     ON notification_outbox(status, next_attempt_at);
+                CREATE TABLE IF NOT EXISTS rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    smis_id INTEGER NOT NULL,
+                    umo TEXT NOT NULL,
+                    rule_type TEXT NOT NULL,
+                    threshold REAL NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_rules_item ON rules(smis_id, enabled);
+                CREATE INDEX IF NOT EXISTS idx_rules_umo ON rules(umo, enabled);
+                CREATE TABLE IF NOT EXISTS rule_states (
+                    rule_id INTEGER PRIMARY KEY,
+                    alert_active INTEGER NOT NULL DEFAULT 0,
+                    qualifying_count INTEGER NOT NULL DEFAULT 0,
+                    clearing_count INTEGER NOT NULL DEFAULT 0,
+                    last_value REAL,
+                    last_baseline REAL,
+                    last_observed_at TEXT,
+                    last_signal_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'waiting',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS rule_health (
+                    smis_id INTEGER NOT NULL,
+                    umo TEXT NOT NULL,
+                    fetch_failures INTEGER NOT NULL DEFAULT 0,
+                    health_alerted INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(smis_id, umo)
+                );
             """)
+            existing = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(market_snapshots)")
+            }
+            for column in (
+                "uuyp_sell_price REAL", "uuyp_sell_num INTEGER",
+                "c5_sell_price REAL", "c5_sell_num INTEGER",
+                "igxe_sell_price REAL", "igxe_sell_num INTEGER",
+                "eco_sell_price REAL", "eco_sell_num INTEGER",
+            ):
+                if column.split()[0] not in existing:
+                    conn.execute(f"ALTER TABLE market_snapshots ADD COLUMN {column}")
 
     @staticmethod
     def _utcnow() -> str:
@@ -201,6 +257,163 @@ class MonitorStorage:
                     cn_name COLLATE NOCASE, smis_id
             """, (pattern, pattern, query.lower(), query.lower())).fetchall()
         return [dict(row) for row in rows]
+
+    def count_rule_items(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT smis_id) FROM rules WHERE enabled=1"
+            ).fetchone()
+        return int(row[0])
+
+    def add_rule(self, smis_id: int, umo: str, rule_type: str, threshold: float) -> dict:
+        now = self._utcnow()
+        with self.connect() as conn:
+            cursor = conn.execute("""
+                INSERT INTO rules(smis_id,umo,rule_type,threshold,enabled,created_at,updated_at)
+                VALUES(?,?,?,?,1,?,?)
+            """, (int(smis_id), umo, rule_type, float(threshold), now, now))
+            rule_id = int(cursor.lastrowid)
+        return self.get_rule(rule_id)
+
+    def get_rule(self, rule_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("""
+                SELECT r.*,i.item_key,i.appid,i.hash_name,i.cn_name
+                FROM rules r JOIN items i USING(smis_id) WHERE r.id=?
+            """, (int(rule_id),)).fetchone()
+        return dict(row) if row else None
+
+    def list_rules(
+        self, *, umo: str | None = None, smis_id: int | None = None,
+        enabled_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        if umo is not None:
+            clauses.append("r.umo=?")
+            params.append(umo)
+        if smis_id is not None:
+            clauses.append("r.smis_id=?")
+            params.append(int(smis_id))
+        if enabled_only:
+            clauses.append("r.enabled=1")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(f"""
+                SELECT r.*,i.item_key,i.appid,i.hash_name,i.cn_name
+                FROM rules r JOIN items i USING(smis_id) {where}
+                ORDER BY i.cn_name COLLATE NOCASE,r.id
+            """, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_rule(self, rule_id: int, umo: str, threshold: float) -> dict | None:
+        now = self._utcnow()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE rules SET threshold=?,updated_at=? WHERE id=? AND umo=?",
+                (float(threshold), now, int(rule_id), umo),
+            )
+            if not cursor.rowcount:
+                return None
+            conn.execute("DELETE FROM rule_states WHERE rule_id=?", (int(rule_id),))
+        return self.get_rule(rule_id)
+
+    def delete_rule(self, rule_id: int, umo: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT smis_id FROM rules WHERE id=? AND umo=?", (int(rule_id), umo)
+            ).fetchone()
+            if not row:
+                return False
+            smis_id = int(row[0])
+            conn.execute("DELETE FROM rules WHERE id=?", (int(rule_id),))
+            conn.execute("DELETE FROM rule_states WHERE rule_id=?", (int(rule_id),))
+            conn.execute(
+                "DELETE FROM notification_outbox WHERE status='pending' AND umo=? "
+                "AND signal_key LIKE ?", (umo, f"rule:{int(rule_id)}:%"),
+            )
+            session_remaining = conn.execute(
+                "SELECT COUNT(*) FROM rules WHERE smis_id=? AND umo=?",
+                (smis_id, umo),
+            ).fetchone()[0]
+            if not session_remaining:
+                conn.execute(
+                    "DELETE FROM rule_health WHERE smis_id=? AND umo=?", (smis_id, umo)
+                )
+                conn.execute(
+                    "DELETE FROM notification_outbox WHERE status='pending' AND umo=? "
+                    "AND signal_key LIKE ?", (umo, f"health:smis:{smis_id}:{umo}:%"),
+                )
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM rules WHERE smis_id=?", (smis_id,)
+            ).fetchone()[0]
+            if not remaining:
+                conn.execute("DELETE FROM items WHERE smis_id=?", (smis_id,))
+                conn.execute("DELETE FROM rule_health WHERE smis_id=?", (smis_id,))
+        return True
+
+    def get_rule_state(self, rule_id: int) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM rule_states WHERE rule_id=?", (int(rule_id),)
+            ).fetchone()
+        state = dict(DEFAULT_RULE_STATE)
+        if row:
+            state.update(dict(row))
+        state["rule_id"] = int(rule_id)
+        return state
+
+    def update_rule_state(self, rule_id: int, **changes: Any) -> dict[str, Any]:
+        state = self.get_rule_state(rule_id)
+        for key, value in changes.items():
+            if key not in DEFAULT_RULE_STATE:
+                raise KeyError(f"未知规则状态字段: {key}")
+            state[key] = value
+        now = self._utcnow()
+        with self.connect() as conn:
+            conn.execute("""
+                INSERT INTO rule_states(
+                    rule_id,alert_active,qualifying_count,clearing_count,last_value,
+                    last_baseline,last_observed_at,last_signal_at,status,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(rule_id) DO UPDATE SET
+                    alert_active=excluded.alert_active,
+                    qualifying_count=excluded.qualifying_count,
+                    clearing_count=excluded.clearing_count,
+                    last_value=excluded.last_value,
+                    last_baseline=excluded.last_baseline,
+                    last_observed_at=excluded.last_observed_at,
+                    last_signal_at=excluded.last_signal_at,
+                    status=excluded.status,updated_at=excluded.updated_at
+            """, (
+                int(rule_id), int(state["alert_active"]), int(state["qualifying_count"]),
+                int(state["clearing_count"]), state["last_value"], state["last_baseline"],
+                state["last_observed_at"], state["last_signal_at"], state["status"], now,
+            ))
+        return self.get_rule_state(rule_id)
+
+    def get_health_state(self, smis_id: int, umo: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM rule_health WHERE smis_id=? AND umo=?", (int(smis_id), umo)
+            ).fetchone()
+        state = dict(DEFAULT_HEALTH_STATE)
+        if row:
+            state.update(dict(row))
+        return state
+
+    def update_health_state(self, smis_id: int, umo: str, **changes: Any) -> dict:
+        state = self.get_health_state(smis_id, umo)
+        state.update(changes)
+        now = self._utcnow()
+        with self.connect() as conn:
+            conn.execute("""
+                INSERT INTO rule_health(smis_id,umo,fetch_failures,health_alerted,updated_at)
+                VALUES(?,?,?,?,?) ON CONFLICT(smis_id,umo) DO UPDATE SET
+                    fetch_failures=excluded.fetch_failures,
+                    health_alerted=excluded.health_alerted,updated_at=excluded.updated_at
+            """, (int(smis_id), umo, int(state["fetch_failures"]),
+                    int(state["health_alerted"]), now))
+        return self.get_health_state(smis_id, umo)
 
     def upsert_subscription(self, smis_id: int, umo: str, max_ratio: float) -> dict[str, Any]:
         now = self._utcnow()
@@ -378,7 +591,10 @@ class MonitorStorage:
             rows.append((
                 s.source, s.item_key, s.smis_id, s.appid, s.name, s.name_zh,
                 s.observed_at.isoformat(), s.source_updated_at.isoformat(), s.kind,
-                s.buff_sell_price, s.buff_sell_num, s.steam_sell_price,
+                s.buff_sell_price, s.buff_sell_num,
+                s.uuyp_sell_price, s.uuyp_sell_num, s.c5_sell_price, s.c5_sell_num,
+                s.igxe_sell_price, s.igxe_sell_num, s.eco_sell_price, s.eco_sell_num,
+                s.steam_sell_price,
                 s.steam_sell_num, s.steam_transaction_quantity,
                 s.ratio(),
             ))
@@ -388,11 +604,31 @@ class MonitorStorage:
                 INSERT OR IGNORE INTO market_snapshots (
                     source,item_key,smis_id,appid,name,name_zh,observed_at,
                     source_updated_at,kind,buff_sell_price,buff_sell_num,
+                    uuyp_sell_price,uuyp_sell_num,c5_sell_price,c5_sell_num,
+                    igxe_sell_price,igxe_sell_num,eco_sell_price,eco_sell_num,
                     steam_sell_price,steam_sell_num,steam_transaction_quantity,
                     buff_to_steam_ratio
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, rows)
             return conn.total_changes - before
+
+    def steam_history(self, item_key: str, days: int = 7) -> list[dict[str, Any]]:
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute("""
+                SELECT source_updated_at,steam_sell_price FROM market_snapshots
+                WHERE item_key=? AND source_updated_at>=? AND steam_sell_price>0
+                ORDER BY source_updated_at
+            """, (item_key, cutoff)).fetchall()
+        deduped: dict[str, float] = {}
+        for row in rows:
+            deduped[str(row["source_updated_at"])] = float(row["steam_sell_price"])
+        return [
+            {"source_updated_at": key, "steam_sell_price": value}
+            for key, value in sorted(deduped.items())
+        ]
 
     def get_metadata(self, key: str) -> str | None:
         with self.connect() as conn:

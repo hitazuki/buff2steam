@@ -5,16 +5,17 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from urllib.parse import quote
 
-from src.monitoring.models import MarketSnapshot, StrategyContext
-from src.monitoring.service import calculate_history_stats
+from src.monitoring.models import MarketSnapshot
+from src.monitoring.models import steam_net_amount
 from src.monitoring.smis_client import SmisClient
 from src.monitoring.storage import MonitorStorage
-from src.monitoring.strategy import ThresholdStrategy
 from src.notifications.astrbot import AstrBotNotifier
 
 logger = logging.getLogger(__name__)
+RULE_TYPES = {"ratio", "t7", "platform", "steam"}
 
 
 class ServiceError(RuntimeError):
@@ -45,26 +46,18 @@ class MonitoringManager:
         *,
         max_items: int = 20,
         quote_cache_seconds: int = 60,
-        history_days: int = 30,
         confirmations: int = 2,
         clear_confirmations: int = 2,
         health_failure_threshold: int = 3,
-        max_age_minutes: int = 15,
-        min_buff_sell_num: int = 100,
-        min_steam_volume: int = 1000,
     ) -> None:
         self.storage = storage
         self.source = source
         self.notifier = notifier
         self.max_items = max_items
         self.quote_cache_seconds = quote_cache_seconds
-        self.history_days = history_days
         self.confirmations = confirmations
         self.clear_confirmations = clear_confirmations
         self.health_failure_threshold = health_failure_threshold
-        self.max_age_minutes = max_age_minutes
-        self.min_buff_sell_num = min_buff_sell_num
-        self.min_steam_volume = min_steam_volume
         self._locks_guard = threading.Lock()
         self._item_locks: dict[int, threading.Lock] = {}
 
@@ -74,7 +67,10 @@ class MonitoringManager:
 
     def list_items(self) -> list[dict]:
         result = []
+        active_ids = {int(rule["smis_id"]) for rule in self.storage.list_rules()}
         for item in self.storage.list_items():
+            if int(item["smis_id"]) not in active_ids:
+                continue
             latest = self.storage.latest_snapshot(item["item_key"])
             result.append({**item, "latest": self._snapshot_row_to_dict(latest) if latest else None})
         return result
@@ -86,41 +82,54 @@ class MonitoringManager:
             logger.warning("SMIS 搜索失败：%s", exc)
             raise ServiceError(503, "smis_search_failed", "SMIS 搜索暂时不可用") from exc
 
-    def list_subscriptions(self, umo: str) -> list[dict]:
-        rows = self.storage.list_subscriptions(umo=umo)
+    @staticmethod
+    def _validate_rule(rule_type: str, threshold: float) -> None:
+        if rule_type not in RULE_TYPES:
+            raise ServiceError(422, "invalid_rule_type", "规则类型必须是 ratio、t7、platform 或 steam")
+        if rule_type in {"ratio", "t7"} and not 1 <= threshold <= 100:
+            raise ServiceError(422, "invalid_threshold", "比例阈值必须在 1 到 100 之间")
+        if rule_type in {"platform", "steam"} and threshold <= 0:
+            raise ServiceError(422, "invalid_threshold", "价格阈值必须大于 0")
+
+    def list_rules(self, umo: str, smis_id: int | None = None) -> list[dict]:
+        rows = self.storage.list_rules(umo=umo, smis_id=smis_id)
         for row in rows:
-            row["max_ratio_percent"] = round(float(row["max_ratio"]) * 100, 2)
-            row["state"] = self.storage.get_subscription_state(row["smis_id"], umo)
+            row["state"] = self.storage.get_rule_state(row["id"])
         return rows
 
-    def add_subscription(self, umo: str, smis_id: int, max_ratio_percent: float) -> dict:
-        self._validate_ratio(max_ratio_percent)
+    def add_rule(self, umo: str, smis_id: int, rule_type: str, threshold: float) -> dict:
+        rule_type = rule_type.strip().lower()
+        self._validate_rule(rule_type, threshold)
+        if (
+            not self.storage.list_rules(smis_id=smis_id)
+            and self.storage.count_rule_items() >= self.max_items
+        ):
+            raise ServiceError(409, "item_limit", f"最多只能监控 {self.max_items} 个饰品")
         item = self.storage.get_item(smis_id)
         if item is None:
-            if self.storage.count_items() >= self.max_items:
-                raise ServiceError(409, "item_limit", f"最多只能配置 {self.max_items} 个饰品")
-            metadata = self.source.fetch_metadata(smis_id)
+            try:
+                metadata = self.source.fetch_metadata(smis_id)
+            except Exception as exc:
+                raise ServiceError(503, "source_unavailable", f"SMIS 饰品信息获取失败：{exc}") from exc
             item = self.storage.upsert_item(metadata)
-        subscription = self.storage.upsert_subscription(
-            smis_id, umo, float(max_ratio_percent) / 100
-        )
-        quote_data = self.quote(str(smis_id))
-        return {"subscription": subscription, "quote": quote_data}
+        rule = self.storage.add_rule(smis_id, umo, rule_type, threshold)
+        try:
+            self._ensure_history(item_from_row(item))
+        except Exception as exc:
+            logger.warning("规则历史回填失败 smis_id=%s: %s", smis_id, exc)
+        rule["state"] = self.storage.get_rule_state(rule["id"])
+        return rule
 
-    def update_subscription(self, umo: str, smis_id: int, max_ratio_percent: float) -> dict:
-        self._validate_ratio(max_ratio_percent)
-        if not self.storage.get_subscription(smis_id, umo):
-            raise ServiceError(404, "subscription_not_found", "当前会话未订阅该饰品")
-        return self.storage.upsert_subscription(smis_id, umo, max_ratio_percent / 100)
+    def update_rule(self, umo: str, rule_id: int, threshold: float) -> dict:
+        rule = self.storage.get_rule(rule_id)
+        if not rule or str(rule["umo"]) != umo:
+            raise ServiceError(404, "rule_not_found", "当前会话未找到该规则")
+        self._validate_rule(str(rule["rule_type"]), threshold)
+        return self.storage.update_rule(rule_id, umo, threshold)
 
-    def remove_subscription(self, umo: str, smis_id: int) -> None:
-        if not self.storage.delete_subscription(smis_id, umo):
-            raise ServiceError(404, "subscription_not_found", "当前会话未订阅该饰品")
-
-    @staticmethod
-    def _validate_ratio(value: float) -> None:
-        if value < 1 or value > 100:
-            raise ServiceError(422, "invalid_ratio", "阈值百分比必须在 1 到 100 之间")
+    def remove_rule(self, umo: str, rule_id: int) -> None:
+        if not self.storage.delete_rule(rule_id, umo):
+            raise ServiceError(404, "rule_not_found", "当前会话未找到该规则")
 
     def _resolve_local_item(self, query: str) -> dict | None:
         matches = self.storage.resolve_items(query)
@@ -182,6 +191,10 @@ class MonitoringManager:
     def quote(self, query: str) -> dict:
         item_row = self._resolve_quote_item(query)
         item = item_from_row(item_row)
+        try:
+            self._ensure_history(item)
+        except Exception as exc:
+            logger.warning("报价历史回填失败 smis_id=%s: %s", item["smis_id"], exc)
         latest = self.storage.latest_snapshot(item["item_key"])
         if latest and self._snapshot_age_seconds(latest) <= self.quote_cache_seconds:
             return self._quote_payload(item_row, latest, cached=True, stale=False)
@@ -218,10 +231,15 @@ class MonitoringManager:
             observed_at=datetime.fromisoformat(row["observed_at"]),
             source_updated_at=datetime.fromisoformat(row["source_updated_at"]),
             buff_sell_price=row["buff_sell_price"], buff_sell_num=row["buff_sell_num"],
+            uuyp_sell_price=row.get("uuyp_sell_price"), uuyp_sell_num=row.get("uuyp_sell_num"),
+            c5_sell_price=row.get("c5_sell_price"), c5_sell_num=row.get("c5_sell_num"),
+            igxe_sell_price=row.get("igxe_sell_price"), igxe_sell_num=row.get("igxe_sell_num"),
+            eco_sell_price=row.get("eco_sell_price"), eco_sell_num=row.get("eco_sell_num"),
             steam_sell_price=row["steam_sell_price"], steam_sell_num=row["steam_sell_num"],
             steam_transaction_quantity=row["steam_transaction_quantity"],
             buff_to_steam_ratio=row["buff_to_steam_ratio"], kind=row["kind"], source=row["source"],
         )
+        lowest = snapshot.lowest_platform
         return {
             "observed_at": snapshot.observed_at.isoformat(),
             "source_updated_at": snapshot.source_updated_at.isoformat(),
@@ -232,14 +250,23 @@ class MonitoringManager:
             "steam_net": snapshot.steam_net,
             "steam_transaction_quantity": snapshot.steam_transaction_quantity,
             "ratio": snapshot.calculated_ratio,
+            "platforms": [
+                {"name": name, "sell_price": price, "sell_num": count}
+                for name, price, count in snapshot.platform_quotes
+            ],
+            "lowest_platform": (
+                {"name": lowest[0], "sell_price": lowest[1], "sell_num": lowest[2]}
+                if lowest else None
+            ),
         }
 
     def _quote_payload(self, item: dict, row: dict, *, cached: bool, stale: bool) -> dict:
         snapshot = self._snapshot_row_to_dict(row)
+        stats = self._t7_stats(str(item["item_key"]))
         return {
             "smis_id": int(item["smis_id"]), "appid": int(item["appid"]),
             "name": item["hash_name"], "name_zh": item["cn_name"],
-            **snapshot, "cached": cached, "stale": stale,
+            **snapshot, **stats, "cached": cached, "stale": stale,
             "links": {
                 "smis": f"https://smis.club/detail/{int(item['smis_id'])}",
                 "steam": f"https://steamcommunity.com/market/listings/{int(item['appid'])}/{quote(str(item['hash_name']))}",
@@ -247,115 +274,190 @@ class MonitoringManager:
         }
 
     def _ensure_history(self, item: dict) -> None:
-        key = f"history_backfill:{item['item_key']}:{self.history_days}"
+        key = f"rule_history_backfill:v1:{item['item_key']}:7"
         if self.storage.get_metadata(key) == "complete":
             return
-        snapshots = self.source.fetch_history(item, self.history_days)
+        snapshots = self.source.fetch_history(item, 7)
         self.storage.save_snapshots(snapshots)
         self.storage.set_metadata(key, "complete")
 
+    @staticmethod
+    def _percentile(values: list[float], fraction: float) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        if len(ordered) == 1:
+            return ordered[0]
+        position = (len(ordered) - 1) * fraction
+        lower = int(position)
+        upper = min(lower + 1, len(ordered) - 1)
+        weight = position - lower
+        return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+    def _t7_stats(self, item_key: str) -> dict:
+        rows = self.storage.steam_history(item_key, days=7)
+        values = [steam_net_amount(float(row["steam_sell_price"])) for row in rows]
+        values = [value for value in values if value > 0]
+        span_days = 0.0
+        if len(rows) >= 2:
+            first = datetime.fromisoformat(rows[0]["source_updated_at"])
+            last = datetime.fromisoformat(rows[-1]["source_updated_at"])
+            span_days = max(0.0, (last - first).total_seconds() / 86400)
+        sufficient = len(values) >= 12 and span_days >= 3
+        return {
+            "t7_sample_count": len(values),
+            "t7_span_days": round(span_days, 2),
+            "t7_sufficient": sufficient,
+            "t7_steam_net_low": min(values) if values else None,
+            "t7_steam_net_p25": self._percentile(values, 0.25),
+            "t7_steam_net_median": median(values) if values else None,
+        }
+
     def monitor_item(self, item_row: dict) -> dict:
         item = item_from_row(item_row)
-        subscriptions = self.storage.list_subscriptions(smis_id=item["smis_id"])
-        if not subscriptions:
+        rules = self.storage.list_rules(smis_id=item["smis_id"])
+        if not rules:
             return {"smis_id": item["smis_id"], "skipped": True}
         try:
             try:
                 self._ensure_history(item)
             except Exception as exc:
-                logger.warning("历史回填失败 smis_id=%s: %s", item["smis_id"], exc)
+                logger.warning("T+7 历史回填失败 smis_id=%s: %s", item["smis_id"], exc)
             with self._lock_for(item["smis_id"]):
                 snapshot = self.source.fetch_current(item)
                 self.storage.save_snapshots([snapshot])
         except Exception as exc:
-            self._handle_item_failure(item, subscriptions, exc)
+            self._handle_item_failure(item, rules, exc)
             return {"smis_id": item["smis_id"], "success": False, "error": str(exc)}
 
-        history = calculate_history_stats(
-            self.storage.history_ratios(item["item_key"]), snapshot.calculated_ratio
-        )
-        for subscription in subscriptions:
-            self._evaluate_subscription(item, snapshot, history, subscription)
+        self._handle_item_recovery(item, rules, snapshot)
+        stats = self._t7_stats(item["item_key"])
+        for rule in rules:
+            self._evaluate_rule(snapshot, stats, rule)
         return {"smis_id": item["smis_id"], "success": True}
 
-    def _evaluate_subscription(self, item: dict, snapshot: MarketSnapshot, history, sub: dict) -> None:
-        smis_id, umo = int(item["smis_id"]), str(sub["umo"])
-        state = self.storage.get_subscription_state(smis_id, umo)
-        strategy = ThresholdStrategy(
-            max_ratio=float(sub["max_ratio"]), max_age_minutes=self.max_age_minutes,
-            min_buff_sell_num=self.min_buff_sell_num, min_steam_volume=self.min_steam_volume,
-        )
-        result = strategy.evaluate(StrategyContext(snapshot, history=history))
-        stale_reason = next((reason for reason in result.reasons if "数据时间" in reason), None)
-        changes = {"last_ratio": result.ratio}
-        if stale_reason:
-            changes.update(self._failure_changes(item, umo, state, RuntimeError(stale_reason)))
-        else:
-            changes["fetch_failures"] = 0
-        if state["health_alerted"] and not stale_reason:
-            signal = f"health:{item['item_key']}:recovered:{snapshot.observed_at.isoformat()}"
-            self.storage.enqueue_notification(
-                signal, umo, "health_recovered", f"【监控恢复】{item['name_zh']}",
-                "SMIS 行情数据已恢复获取。",
-            )
-            changes["health_alerted"] = 0
+    def _rule_value(self, snapshot: MarketSnapshot, stats: dict, rule_type: str) -> tuple[float | None, float | None, str]:
+        lowest = snapshot.lowest_platform
+        if rule_type == "steam":
+            value = float(snapshot.steam_sell_price or 0)
+            return (value if value > 0 else None), None, "ready"
+        if lowest is None:
+            return None, None, "价格缺失"
+        platform_price = float(lowest[1])
+        if rule_type == "platform":
+            return platform_price, None, "ready"
+        if rule_type == "ratio":
+            return snapshot.calculated_ratio, snapshot.steam_net, "ready"
+        if not stats["t7_sufficient"] or not stats["t7_steam_net_p25"]:
+            return None, stats.get("t7_steam_net_p25"), "历史不足"
+        return platform_price / float(stats["t7_steam_net_p25"]), float(stats["t7_steam_net_p25"]), "ready"
 
-        if result.eligible:
-            qualifying = int(state["qualifying_count"]) + 1
+    def _evaluate_rule(self, snapshot: MarketSnapshot, stats: dict, rule: dict) -> None:
+        rule_id = int(rule["id"])
+        rule_type = str(rule["rule_type"])
+        threshold = float(rule["threshold"])
+        state = self.storage.get_rule_state(rule_id)
+        value, baseline, status = self._rule_value(snapshot, stats, rule_type)
+        observed = snapshot.observed_at.isoformat()
+        changes = {
+            "last_value": value, "last_baseline": baseline,
+            "last_observed_at": observed, "status": status,
+        }
+        if value is None:
+            changes.update({"qualifying_count": 0, "clearing_count": 0})
+            self.storage.update_rule_state(rule_id, **changes)
+            return
+
+        limit = threshold / 100 if rule_type in {"ratio", "t7"} else threshold
+        qualifies = value >= limit if rule_type == "steam" else value <= limit
+        if not state["alert_active"]:
+            qualifying = int(state["qualifying_count"]) + 1 if qualifies else 0
             changes.update({"qualifying_count": qualifying, "clearing_count": 0})
-            if not state["alert_active"] and qualifying >= self.confirmations:
-                signal = f"opportunity:{item['item_key']}:{snapshot.observed_at.isoformat()}"
-                title, content = self._format_alert(snapshot, sub, history)
-                self.storage.enqueue_notification(signal, umo, "opportunity", title, content)
+            if qualifying >= self.confirmations:
+                title, content = self._format_rule_alert(snapshot, stats, rule, value)
+                signal = f"rule:{rule_id}:{observed}"
+                self.storage.enqueue_notification(
+                    signal, str(rule["umo"]), f"rule_{rule_type}", title, content
+                )
                 changes.update({
-                    "alert_active": 1, "last_signal_at": snapshot.observed_at.isoformat(),
-                    "pending_signal_key": None,
+                    "alert_active": 1, "qualifying_count": qualifying,
+                    "last_signal_at": observed,
                 })
         else:
-            clearing = int(state["clearing_count"]) + 1 if state["alert_active"] else 0
+            clear_boundary = limit * (0.97 if rule_type == "steam" else 1.03)
+            clears = value < clear_boundary if rule_type == "steam" else value > clear_boundary
+            clearing = int(state["clearing_count"]) + 1 if clears else 0
             changes.update({"qualifying_count": 0, "clearing_count": clearing})
-            if state["alert_active"] and clearing >= self.clear_confirmations:
+            if clearing >= self.clear_confirmations:
                 changes.update({"alert_active": 0, "clearing_count": 0})
-        self.storage.update_subscription_state(smis_id, umo, **changes)
+        self.storage.update_rule_state(rule_id, **changes)
 
-    def _failure_changes(self, item: dict, umo: str, state: dict, exc: Exception) -> dict:
-        failures = int(state["fetch_failures"]) + 1
-        changes = {"fetch_failures": failures}
-        if failures >= self.health_failure_threshold and not state["health_alerted"]:
-            signal = f"health:{item['item_key']}:down:{failures}"
-            self.storage.enqueue_notification(
-                signal, umo, "health_down", f"【监控异常】{item['name_zh']}",
-                f"SMIS 行情连续 {failures} 轮获取失败：{exc}",
+    def _handle_item_failure(self, item: dict, rules: list[dict], exc: Exception) -> None:
+        for umo in sorted({str(rule["umo"]) for rule in rules}):
+            state = self.storage.get_health_state(item["smis_id"], umo)
+            failures = int(state["fetch_failures"]) + 1
+            alerted = int(state["health_alerted"])
+            if failures >= self.health_failure_threshold and not alerted:
+                self.storage.enqueue_notification(
+                    f"health:{item['item_key']}:{umo}:down:{failures}", umo, "health_down",
+                    f"【监控异常】{item['name_zh']}",
+                    f"SMIS 行情连续 {failures} 轮请求失败：{exc}",
+                )
+                alerted = 1
+            self.storage.update_health_state(
+                item["smis_id"], umo, fetch_failures=failures, health_alerted=alerted
             )
-            changes["health_alerted"] = 1
-        return changes
 
-    def _handle_item_failure(self, item: dict, subscriptions: list[dict], exc: Exception) -> None:
-        for sub in subscriptions:
-            smis_id, umo = int(item["smis_id"]), str(sub["umo"])
-            state = self.storage.get_subscription_state(smis_id, umo)
-            changes = self._failure_changes(item, umo, state, exc)
-            self.storage.update_subscription_state(smis_id, umo, **changes)
+    def _handle_item_recovery(self, item: dict, rules: list[dict], snapshot: MarketSnapshot) -> None:
+        for umo in sorted({str(rule["umo"]) for rule in rules}):
+            state = self.storage.get_health_state(item["smis_id"], umo)
+            if state["health_alerted"]:
+                self.storage.enqueue_notification(
+                    f"health:{item['item_key']}:{umo}:recovered:{snapshot.observed_at.isoformat()}",
+                    umo, "health_recovered", f"【监控恢复】{item['name_zh']}",
+                    "SMIS 行情请求已恢复。",
+                )
+            self.storage.update_health_state(
+                item["smis_id"], umo, fetch_failures=0, health_alerted=0
+            )
 
     @staticmethod
-    def _format_alert(snapshot: MarketSnapshot, sub: dict, history) -> tuple[str, str]:
-        ratio = snapshot.calculated_ratio or 0
+    def _format_rule_alert(snapshot: MarketSnapshot, stats: dict, rule: dict, value: float) -> tuple[str, str]:
+        labels = {
+            "ratio": ("【即时挂刀】", "即时比例"),
+            "t7": ("【T+7挂刀】", "T+7 保守比例"),
+            "platform": ("【平台到价】", "最低平台价"),
+            "steam": ("【Steam清仓】", "Steam 售价"),
+        }
+        rule_type = str(rule["rule_type"])
+        prefix, metric_label = labels[rule_type]
+        lowest = snapshot.lowest_platform
+        threshold = float(rule["threshold"])
+        value_text = f"{value:.2%}" if rule_type in {"ratio", "t7"} else f"¥{value:.2f}"
+        threshold_text = f"{threshold:.2f}%" if rule_type in {"ratio", "t7"} else f"¥{threshold:.2f}"
         lines = [
-            f"{snapshot.name_zh} / {snapshot.name}",
-            f"挂刀比例：{ratio:.2%}（阈值 {float(sub['max_ratio']):.2%}）",
-            f"BUFF 最低售价：¥{snapshot.buff_sell_price:.2f}（在售 {snapshot.buff_sell_num}）",
-            f"Steam 售价：¥{snapshot.steam_sell_price:.2f}",
-            f"Steam 预计到手：¥{snapshot.steam_net:.2f}",
-            f"Steam 日成交量：{snapshot.steam_transaction_quantity}",
+            f"规则 #{int(rule['id'])} · {snapshot.name_zh} / {snapshot.name}",
+            f"{metric_label}：{value_text}（阈值 {threshold_text}）",
         ]
-        if history.median is not None:
-            lines.append(f"30 天中位数：{history.median:.2%}")
+        if lowest:
+            lines.append(f"最低平台：{lowest[0]} ¥{lowest[1]:.2f}（在售 {lowest[2]}）")
+        lines.extend([
+            f"Steam 售价：¥{float(snapshot.steam_sell_price or 0):.2f}",
+            f"Steam 预计到手：¥{snapshot.steam_net:.2f}",
+            f"Steam 在售/日成交：{snapshot.steam_sell_num or 0}/{snapshot.steam_transaction_quantity or 0}",
+        ])
+        if stats.get("t7_steam_net_p25") is not None:
+            lines.extend([
+                f"7 日 Steam 到手最低：¥{stats['t7_steam_net_low']:.2f}",
+                f"7 日 Steam 到手 P25：¥{stats['t7_steam_net_p25']:.2f}",
+                f"7 日 Steam 到手中位数：¥{stats['t7_steam_net_median']:.2f}",
+            ])
         lines.extend([
             f"数据更新时间：{snapshot.source_updated_at.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
             f"SMIS：https://smis.club/detail/{snapshot.smis_id}",
             f"Steam：https://steamcommunity.com/market/listings/{snapshot.appid}/{quote(snapshot.name)}",
         ])
-        return f"【挂刀提醒】{snapshot.name_zh} {ratio:.2%}", "\n".join(lines)
+        return f"{prefix}{snapshot.name_zh} {value_text}", "\n".join(lines)
 
     def dispatch_outbox(self) -> dict[str, int]:
         sent = failed = 0
@@ -372,9 +474,10 @@ class MonitoringManager:
         return {"sent": sent, "failed": failed}
 
     def run_cycle(self, max_workers: int = 4) -> list[dict]:
+        active_ids = {int(rule["smis_id"]) for rule in self.storage.list_rules()}
         items = [
             item for item in self.storage.list_items(enabled_only=True)
-            if self.storage.list_subscriptions(smis_id=item["smis_id"])
+            if int(item["smis_id"]) in active_ids
         ]
         results: list[dict] = []
         if items:

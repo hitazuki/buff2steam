@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class ServiceRuntime:
     def __init__(
-        self, manager: MonitoringManager, interval_seconds: int = 300,
+        self, manager: MonitoringManager, interval_seconds: int = 1800,
         backup_dir: Path = Path("./data/backups"),
     ) -> None:
         self.manager = manager
@@ -63,7 +63,7 @@ class ServiceRuntime:
             "last_cycle_at": self.last_cycle_at,
             "last_cycle_ok": self.last_cycle_ok,
             "last_error": self.last_error,
-            "items": self.manager.storage.count_items(),
-            "subscriptions": len(self.manager.storage.list_subscriptions()),
+            "items": self.manager.storage.count_rule_items(),
+            "rules": len(self.manager.storage.list_rules()),
             "outbox": self.manager.storage.outbox_counts(),
         }

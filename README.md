@@ -179,7 +179,7 @@ buff2steam/
 ## AstrBot 查询与监控服务
 
 项目可作为独立 Docker 服务与 AstrBot 部署在同一 VPS，通过内部网络提供行情查询、
-按 QQ 会话订阅和主动告警。服务不需要部署个人 BUFF/Steam Cookie。
+按 QQ 会话配置规则和主动告警。服务不需要部署个人 BUFF/Steam Cookie。
 
 buff2steam 使用仓库中的 [`compose.yml`](compose.yml)。AstrBot 请按
 [AstrBot 官方仓库](https://github.com/AstrBotDevs/AstrBot)及
@@ -211,7 +211,7 @@ docker network create astrbot-internal
 3. 执行 `docker restart astrbot`，并从日志确认插件没有加载错误。
 4. 在 AstrBot WebUI 配置 `service_base_url=http://buff2steam:8080`、
    `service_token` 和 `timeout_seconds=10`。
-5. 在 QQ 中依次执行 `/skin help`、`/skin watch test` 和 `/skin quote 1579`。
+5. 在 QQ 中依次执行 `/skin help`、`/skin test` 和 `/skin quote 1579`。
 
 AstrBot WebUI 默认使用 `6185` 端口；公网部署时应通过防火墙、反向代理或
 其他访问控制保护管理界面。buff2steam 的 `8080` 只在 Docker 内网暴露。
@@ -226,14 +226,23 @@ AstrBot 插件统一使用英文命令：
 /skin search <名称>                # 全市场搜索
 /skin quote <SMIS_ID|名称>         # 全市场即时查询
 /skin items
-/skin watch list
-/skin watch add <SMIS_ID|名称> 72  # 管理员注册并监控
-/skin watch remove <SMIS_ID>
-/skin watch threshold <SMIS_ID> <MAX_RATIO_PERCENT>
-/skin watch test
-/skin watch status
+/skin rule add <SMIS_ID|名称> ratio 72
+/skin rule add <SMIS_ID|名称> t7 75
+/skin rule add <SMIS_ID|名称> platform 3.20
+/skin rule add <SMIS_ID|名称> steam 5.50
+/skin rule list [SMIS_ID]
+/skin rule set <RULE_ID> <THRESHOLD>
+/skin rule remove <RULE_ID>
+/skin test
+/skin status
 /skin help
 ```
+
+`ratio` 比较当前最低平台价与当前 Steam 到手价；`t7` 使用过去 7 天
+Steam 到手价 P25 作为保守分母；`platform` 等待第三方平台买入价；`steam`
+用于 Steam 库存达到目标售价后的清理提醒。五个平台为 BUFF、悠悠有品、C5、
+IGXE 和 ECO，不按在售数或成交量过滤。服务默认每 30 分钟轮询，连续两轮满足
+才提醒，并使用 3% 回差重新布防。
 
 完整部署步骤见 [DEPLOY_ASTRBOT.md](DEPLOY_ASTRBOT.md)。
 

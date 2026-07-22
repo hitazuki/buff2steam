@@ -13,13 +13,12 @@ from astrbot.api.star import Context, Star, register
 HELP_TEXT = """buff2steam 命令：
 /skin search <名称> - 搜索 SMIS 饰品 ID
 /skin quote <SMIS_ID|名称> - 全市场即时查询
-/skin items - 列出已配置饰品
-/skin watch list - 当前会话订阅
-/skin watch add <SMIS_ID|名称> [阈值百分比]
-/skin watch remove <SMIS_ID>
-/skin watch threshold <SMIS_ID> <阈值百分比>
-/skin watch test - 测试主动推送
-/skin watch status - 查看服务状态
+/skin rule add <SMIS_ID|名称> <ratio|t7|platform|steam> <阈值>
+/skin rule list [SMIS_ID] - 当前会话规则
+/skin rule set <RULE_ID> <新阈值>
+/skin rule remove <RULE_ID>
+/skin test - 测试主动推送
+/skin status - 查看服务状态
 /skin help - 显示帮助
 
 管理操作仅限 AstrBot 管理员。"""
@@ -33,7 +32,7 @@ class ServiceClientError(RuntimeError):
     "astrbot_plugin_buff2steam",
     "buff2steam",
     "饰品行情查询与按会话监控",
-    "1.2.0",
+    "2.0.0",
 )
 class Buff2SteamPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -83,15 +82,32 @@ class Buff2SteamPlugin(Star):
             pass
         lines = [
             f"{data['name_zh']} / {data['name']}  [SMIS {data['smis_id']}]",
-            f"挂刀比例：{ratio_text} {marker}",
-            f"BUFF 最低售价：¥{float(data['buff_sell_price'] or 0):.2f}（在售 {data.get('buff_sell_num') or 0}）",
+            f"即时挂刀比例：{ratio_text} {marker}",
+        ]
+        lowest = data.get("lowest_platform")
+        if lowest:
+            lines.append(
+                f"最低平台：{lowest['name']} ¥{float(lowest['sell_price']):.2f}"
+                f"（在售 {lowest.get('sell_num') or 0}）"
+            )
+        lines.extend([
             f"Steam 售价：¥{float(data['steam_sell_price'] or 0):.2f}",
             f"Steam 预计到手：¥{float(data['steam_net'] or 0):.2f}",
             f"Steam 日成交量：{data.get('steam_transaction_quantity') or 0}",
-            f"数据更新时间：{source_time}",
-            f"SMIS：{data['links']['smis']}",
+        ])
+        if data.get("t7_steam_net_p25") is not None:
+            platform_price = float((lowest or {}).get("sell_price") or 0)
+            t7_ratio = platform_price / float(data["t7_steam_net_p25"]) if platform_price else None
+            lines.extend([
+                f"7 日 Steam 到手 P25：¥{float(data['t7_steam_net_p25']):.2f}",
+                f"T+7 保守比例：{t7_ratio:.2%}" if t7_ratio is not None else "T+7 保守比例：未知",
+                f"T+7 历史：{data.get('t7_sample_count', 0)} 点 / {data.get('t7_span_days', 0)} 天"
+                f"（{'充足' if data.get('t7_sufficient') else '不足'}）",
+            ])
+        lines.extend([
+            f"数据更新时间：{source_time}", f"SMIS：{data['links']['smis']}",
             f"Steam：{data['links']['steam']}",
-        ]
+        ])
         if data.get("warning"):
             lines.append(f"警告：{data['warning']}")
         return "\n".join(lines)
@@ -136,7 +152,7 @@ class Buff2SteamPlugin(Star):
         try:
             rows = await self._request("GET", "/v1/items")
             if not rows:
-                yield event.plain_result("尚未配置饰品。管理员可使用 /skin watch add 添加。")
+                yield event.plain_result("尚未配置饰品。管理员可使用 /skin rule add 添加规则。")
                 return
             lines = ["已配置饰品："]
             lines.extend(f"{row['smis_id']} - {row['cn_name']} / {row['hash_name']}" for row in rows)
@@ -144,121 +160,99 @@ class Buff2SteamPlugin(Star):
         except ServiceClientError as exc:
             yield event.plain_result(f"查询失败：{exc}")
 
-    @skin.group("watch")
-    def watch():
-        """监控订阅管理。"""
+    async def _resolve_smis_id(self, query: str) -> int:
+        target = query.strip()
+        if target.isdigit():
+            return int(target)
+        rows = await self._request("GET", "/v1/search", params={"q": target, "limit": 10})
+        exact = [
+            row for row in rows
+            if str(row.get("name_zh") or "").casefold() == target.casefold()
+        ]
+        candidates = exact if exact else rows
+        if not candidates:
+            raise ServiceClientError("SMIS 未找到匹配饰品，请先使用 /skin search。")
+        if len(candidates) > 1:
+            lines = ["名称匹配到多个饰品，请改用 SMIS ID："]
+            lines.extend(f"{row['smis_id']} - {row['name_zh']}" for row in candidates)
+            raise ServiceClientError("\n".join(lines))
+        return int(candidates[0]["smis_id"])
+
+    @skin.group("rule")
+    def rule():
+        """统一监控规则管理。"""
         pass
 
-    @watch.command("list")
-    async def watch_list(self, event: AstrMessageEvent):
-        """列出当前会话订阅。"""
+    @rule.command("list")
+    async def rule_list(self, event: AstrMessageEvent, smis_id: int | None = None):
+        """列出当前会话规则。"""
         try:
-            rows = await self._request(
-                "GET", "/v1/subscriptions", params={"umo": event.unified_msg_origin}
-            )
+            params = {"umo": event.unified_msg_origin}
+            if smis_id is not None:
+                params["smis_id"] = smis_id
+            rows = await self._request("GET", "/v1/rules", params=params)
             if not rows:
-                yield event.plain_result("当前会话尚未订阅饰品。")
+                yield event.plain_result("当前会话尚未配置规则。")
                 return
-            lines = ["当前会话订阅："]
+            labels = {"ratio": "即时比例", "t7": "T+7比例", "platform": "平台买入价", "steam": "Steam清仓价"}
+            lines = ["当前会话规则："]
             for row in rows:
                 active = "告警中" if row["state"].get("alert_active") else "监控中"
+                threshold = float(row["threshold"])
+                unit = "%" if row["rule_type"] in {"ratio", "t7"} else "元"
                 lines.append(
-                    f"{row['smis_id']} - {row['cn_name']}："
-                    f"{float(row['max_ratio_percent']):g}%（{active}）"
+                    f"#{row['id']} {row['smis_id']} - {row['cn_name']} · "
+                    f"{labels[row['rule_type']]} {threshold:g}{unit}（{active}，{row['state'].get('status')}）"
                 )
             yield event.plain_result("\n".join(lines))
         except ServiceClientError as exc:
             yield event.plain_result(f"查询失败：{exc}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @watch.command("add")
-    async def watch_add(
-        self, event: AstrMessageEvent, query: str, max_ratio_percent: float = 72
-    ):
-        """订阅当前会话。"""
+    @rule.command("add")
+    async def rule_add(self, event: AstrMessageEvent, query: str, rule_type: str, threshold: float):
+        """添加监控规则。"""
         try:
-            target = query.strip()
-            if target.isdigit():
-                smis_id = int(target)
-            else:
-                configured = await self._request("GET", "/v1/items")
-                exact = [
-                    row for row in configured
-                    if target.casefold() in {
-                        str(row.get("cn_name") or "").casefold(),
-                        str(row.get("hash_name") or "").casefold(),
-                    }
-                ]
-                if len(exact) == 1:
-                    smis_id = int(exact[0]["smis_id"])
-                else:
-                    rows = await self._request(
-                        "GET", "/v1/search", params={"q": target, "limit": 10}
-                    )
-                    exact = [
-                        row for row in rows
-                        if str(row.get("name_zh") or "").casefold() == target.casefold()
-                    ]
-                    candidates = exact if exact else rows
-                    if len(candidates) != 1:
-                        if not candidates:
-                            yield event.plain_result(
-                                "订阅失败：SMIS 未找到匹配饰品，请先使用 /skin search。"
-                            )
-                        else:
-                            lines = ["订阅失败：名称匹配到多个饰品，请改用 SMIS ID："]
-                            lines.extend(
-                                f"{row['smis_id']} - {row['name_zh']}" for row in candidates
-                            )
-                            yield event.plain_result("\n".join(lines))
-                        return
-                    smis_id = int(candidates[0]["smis_id"])
-            data = await self._request("POST", "/v1/subscriptions", json={
-                "umo": event.unified_msg_origin,
-                "smis_id": smis_id,
-                "max_ratio_percent": max_ratio_percent,
+            smis_id = await self._resolve_smis_id(query)
+            data = await self._request("POST", "/v1/rules", json={
+                "umo": event.unified_msg_origin, "smis_id": smis_id,
+                "rule_type": rule_type.lower(), "threshold": threshold,
             })
-            sub = data["subscription"]
+            unit = "%" if data["rule_type"] in {"ratio", "t7"} else "元"
             yield event.plain_result(
-                f"订阅成功：{sub['cn_name']} / {sub['hash_name']}\n"
-                f"SMIS ID：{sub['smis_id']}\n阈值：{max_ratio_percent:g}%"
+                f"规则已添加：#{data['id']} {data['cn_name']}\n"
+                f"类型：{data['rule_type']} · 阈值：{float(data['threshold']):g}{unit}"
             )
         except ServiceClientError as exc:
-            yield event.plain_result(f"订阅失败：{exc}")
+            yield event.plain_result(f"添加失败：{exc}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @watch.command("remove")
-    async def watch_remove(self, event: AstrMessageEvent, smis_id: int):
-        """取消当前会话订阅。"""
+    @rule.command("set")
+    async def rule_set(self, event: AstrMessageEvent, rule_id: int, threshold: float):
+        """修改规则阈值。"""
         try:
-            await self._request(
-                "DELETE", f"/v1/subscriptions/{smis_id}",
-                params={"umo": event.unified_msg_origin},
-            )
-            yield event.plain_result(f"已取消订阅：SMIS {smis_id}")
-        except ServiceClientError as exc:
-            yield event.plain_result(f"取消失败：{exc}")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @watch.command("threshold")
-    async def watch_threshold(
-        self, event: AstrMessageEvent, smis_id: int, max_ratio_percent: float
-    ):
-        """修改当前会话阈值。"""
-        try:
-            await self._request("PATCH", f"/v1/subscriptions/{smis_id}", json={
-                "umo": event.unified_msg_origin,
-                "max_ratio_percent": max_ratio_percent,
+            data = await self._request("PATCH", f"/v1/rules/{rule_id}", json={
+                "umo": event.unified_msg_origin, "threshold": threshold,
             })
-            yield event.plain_result(
-                f"阈值已更新：SMIS {smis_id} → {max_ratio_percent:g}%"
-            )
+            yield event.plain_result(f"规则 #{data['id']} 阈值已更新为 {float(data['threshold']):g}")
         except ServiceClientError as exc:
             yield event.plain_result(f"修改失败：{exc}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @watch.command("test")
-    async def watch_test(self, event: AstrMessageEvent):
+    @rule.command("remove")
+    async def rule_remove(self, event: AstrMessageEvent, rule_id: int):
+        """删除规则。"""
+        try:
+            await self._request(
+                "DELETE", f"/v1/rules/{rule_id}", params={"umo": event.unified_msg_origin}
+            )
+            yield event.plain_result(f"规则 #{rule_id} 已删除")
+        except ServiceClientError as exc:
+            yield event.plain_result(f"删除失败：{exc}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @skin.command("test")
+    async def push_test(self, event: AstrMessageEvent):
         """测试主动推送链路。"""
         try:
             await self._request(
@@ -269,8 +263,8 @@ class Buff2SteamPlugin(Star):
             yield event.plain_result(f"推送测试失败：{exc}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @watch.command("status")
-    async def watch_status(self, event: AstrMessageEvent):
+    @skin.command("status")
+    async def service_status(self, event: AstrMessageEvent):
         """查看服务状态。"""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -280,7 +274,7 @@ class Buff2SteamPlugin(Star):
             lines = [
                 f"服务运行：{'是' if data.get('running') else '否'}",
                 f"饰品数：{data.get('items', 0)}",
-                f"订阅数：{data.get('subscriptions', 0)}",
+                f"规则数：{data.get('rules', 0)}",
                 f"最近周期：{data.get('last_cycle_at') or '尚未执行'}",
                 f"周期正常：{data.get('last_cycle_ok')}",
                 f"待发送：{(data.get('outbox') or {}).get('pending', 0)}",

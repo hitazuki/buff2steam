@@ -25,6 +25,14 @@ class MarketSnapshot:
     source_updated_at: datetime
     buff_sell_price: float | None = None
     buff_sell_num: int | None = None
+    uuyp_sell_price: float | None = None
+    uuyp_sell_num: int | None = None
+    c5_sell_price: float | None = None
+    c5_sell_num: int | None = None
+    igxe_sell_price: float | None = None
+    igxe_sell_num: int | None = None
+    eco_sell_price: float | None = None
+    eco_sell_num: int | None = None
     steam_sell_price: float | None = None
     steam_sell_num: int | None = None
     steam_transaction_quantity: int | None = None
@@ -38,9 +46,30 @@ class MarketSnapshot:
 
     @property
     def calculated_ratio(self) -> float | None:
-        if not self.buff_sell_price or self.steam_net <= 0:
+        platform = self.lowest_platform
+        if platform is None or self.steam_net <= 0:
             return None
-        return round(self.buff_sell_price / self.steam_net, 4)
+        return round(float(platform[1]) / self.steam_net, 4)
+
+    @property
+    def platform_quotes(self) -> tuple[tuple[str, float, int], ...]:
+        rows = (
+            ("BUFF", self.buff_sell_price, self.buff_sell_num),
+            ("悠悠有品", self.uuyp_sell_price, self.uuyp_sell_num),
+            ("C5", self.c5_sell_price, self.c5_sell_num),
+            ("IGXE", self.igxe_sell_price, self.igxe_sell_num),
+            ("ECO", self.eco_sell_price, self.eco_sell_num),
+        )
+        return tuple(
+            (name, float(price), int(count or 0))
+            for name, price, count in rows
+            if price is not None and float(price) > 0
+        )
+
+    @property
+    def lowest_platform(self) -> tuple[str, float, int] | None:
+        quotes = self.platform_quotes
+        return min(quotes, key=lambda row: row[1]) if quotes else None
 
     def ratio(self) -> float | None:
         return self.calculated_ratio if self.kind == "current" else self.buff_to_steam_ratio

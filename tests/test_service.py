@@ -1,4 +1,5 @@
 import unittest
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -30,8 +31,11 @@ def snapshot(ratio=0.70, offset=0):
         name=ITEM["name"], name_zh=ITEM["name_zh"],
         observed_at=now, source_updated_at=now,
         buff_sell_price=round(steam_net_amount(steam_price) * ratio, 2),
-        buff_sell_num=1000, steam_sell_price=steam_price, steam_sell_num=10000,
-        steam_transaction_quantity=30000, buff_to_steam_ratio=ratio,
+        buff_sell_num=0, uuyp_sell_price=0, uuyp_sell_num=0,
+        c5_sell_price=0, c5_sell_num=0, igxe_sell_price=0, igxe_sell_num=0,
+        eco_sell_price=0, eco_sell_num=0,
+        steam_sell_price=steam_price, steam_sell_num=0,
+        steam_transaction_quantity=0, buff_to_steam_ratio=ratio,
     )
 
 
@@ -58,8 +62,11 @@ class FakeSource:
         return snapshot(float(ratio), self.current_calls)
 
     def fetch_history(self, item, days):
-        history = snapshot(0.74, -3600)
-        return [MarketSnapshot(**{**history.__dict__, "kind": "history"})]
+        result = []
+        for index in range(13):
+            history = snapshot(0.74, -(index * 12 * 3600))
+            result.append(MarketSnapshot(**{**history.__dict__, "kind": "history"}))
+        return result
 
 
 class StaleSource(FakeSource):
@@ -94,7 +101,7 @@ class FakeRuntime:
         self.started = False
 
     def status(self):
-        return {"running": self.started, "items": 1, "subscriptions": 1, "outbox": {}}
+        return {"running": self.started, "items": 1, "rules": 1, "outbox": {}}
 
 
 class ServiceTestCase(unittest.TestCase):
@@ -111,6 +118,35 @@ class ServiceTestCase(unittest.TestCase):
             self.storage, FakeSource(ratios), notifier or FakeNotifier(),
             quote_cache_seconds=cache,
         )
+
+    def test_existing_snapshot_table_gets_platform_columns(self):
+        legacy_path = Path(self.tmp.name) / "legacy.db"
+        connection = sqlite3.connect(legacy_path)
+        connection.execute("""
+            CREATE TABLE market_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+                item_key TEXT NOT NULL, smis_id INTEGER NOT NULL, appid INTEGER NOT NULL,
+                name TEXT NOT NULL, name_zh TEXT NOT NULL, observed_at TEXT NOT NULL,
+                source_updated_at TEXT NOT NULL, kind TEXT NOT NULL,
+                buff_sell_price REAL, buff_sell_num INTEGER, steam_sell_price REAL,
+                steam_sell_num INTEGER, steam_transaction_quantity INTEGER,
+                buff_to_steam_ratio REAL,
+                UNIQUE(source,item_key,observed_at,kind)
+            )
+        """)
+        connection.commit()
+        connection.close()
+        migrated = MonitorStorage(legacy_path)
+        with migrated.connect() as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(market_snapshots)")}
+        self.assertTrue({"uuyp_sell_price", "c5_sell_price", "igxe_sell_price", "eco_sell_price"}.issubset(columns))
+
+    def test_legacy_subscription_is_not_loaded_as_rule(self):
+        self.storage.upsert_subscription(1579, "umo:legacy", 0.72)
+        manager = self.manager()
+        self.assertEqual(manager.list_rules("umo:legacy"), [])
+        self.assertEqual(manager.list_items(), [])
+        self.assertEqual(manager.run_cycle(max_workers=1), [])
 
     def test_quote_uses_sixty_second_cache(self):
         manager = self.manager([0.70])
@@ -171,16 +207,49 @@ class ServiceTestCase(unittest.TestCase):
         self.assertTrue(result["stale"])
         self.assertIn("实时刷新失败", result["warning"])
 
-    def test_per_session_thresholds_and_rearm(self):
+    def test_ratio_rules_are_session_isolated_and_rearm_after_three_percent_margin(self):
         notifier = FakeNotifier()
         manager = self.manager([0.70, 0.70, 0.75, 0.75, 0.70, 0.70], notifier)
-        self.storage.upsert_subscription(1579, "umo:a", 0.72)
-        self.storage.upsert_subscription(1579, "umo:b", 0.68)
+        first = self.storage.add_rule(1579, "umo:a", "ratio", 72)
+        second = self.storage.add_rule(1579, "umo:b", "ratio", 68)
         for _ in range(6):
             manager.run_cycle(max_workers=1)
         recipients = [message[0] for message in notifier.messages]
         self.assertEqual(recipients, ["umo:a", "umo:a"])
-        self.assertEqual(self.storage.get_subscription_state(1579, "umo:b")["alert_active"], 0)
+        self.assertEqual(self.storage.get_rule_state(second["id"])["alert_active"], 0)
+        self.assertEqual(self.storage.get_rule_state(first["id"])["alert_active"], 1)
+
+    def test_lowest_platform_ignores_liquidity(self):
+        value = snapshot()
+        value = MarketSnapshot(**{
+            **value.__dict__, "buff_sell_price": 3.30, "buff_sell_num": 1000,
+            "c5_sell_price": 3.10, "c5_sell_num": 0,
+            "uuyp_sell_price": 3.20, "uuyp_sell_num": 1,
+        })
+        self.assertEqual(value.lowest_platform, ("C5", 3.10, 0))
+        self.assertEqual(value.calculated_ratio, round(3.10 / value.steam_net, 4))
+
+    def test_t7_rule_uses_seven_day_steam_net_p25(self):
+        notifier = FakeNotifier()
+        manager = self.manager([0.70, 0.70], notifier)
+        rule = manager.add_rule("umo:a", 1579, "t7", 72)
+        manager.run_cycle(max_workers=1)
+        manager.run_cycle(max_workers=1)
+        state = self.storage.get_rule_state(rule["id"])
+        self.assertEqual(state["alert_active"], 1)
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("T+7挂刀", notifier.messages[0][1])
+
+    def test_platform_and_steam_rules_trigger_without_volume(self):
+        notifier = FakeNotifier()
+        manager = self.manager([0.70, 0.70], notifier)
+        self.storage.add_rule(1579, "umo:a", "platform", 3.30)
+        self.storage.add_rule(1579, "umo:a", "steam", 5.30)
+        manager.run_cycle(max_workers=1)
+        manager.run_cycle(max_workers=1)
+        self.assertEqual({message[1].split("】", 1)[0] + "】" for message in notifier.messages}, {
+            "【平台到价】", "【Steam清仓】",
+        })
 
     def test_outbox_failure_isolated_by_umo(self):
         notifier = FakeNotifier(failing_umo="umo:b")
@@ -191,17 +260,26 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(result, {"sent": 1, "failed": 1})
         self.assertEqual(self.storage.outbox_counts(), {"pending": 1, "sent": 1})
 
-    def test_stale_source_data_triggers_health_alert(self):
+    def test_stale_source_time_does_not_trigger_health_failure(self):
         notifier = FakeNotifier()
         manager = MonitoringManager(self.storage, StaleSource([0.70]), notifier)
-        self.storage.upsert_subscription(1579, "umo:a", 0.72)
+        self.storage.add_rule(1579, "umo:a", "ratio", 72)
+        for _ in range(3):
+            manager.run_cycle(max_workers=1)
+        self.assertEqual(len(notifier.messages), 1)
+        self.assertIn("即时挂刀", notifier.messages[0][1])
+        state = self.storage.get_health_state(1579, "umo:a")
+        self.assertEqual(state["fetch_failures"], 0)
+        self.assertEqual(state["health_alerted"], 0)
+
+    def test_three_real_request_failures_trigger_health_alert(self):
+        notifier = FakeNotifier()
+        manager = self.manager([RuntimeError("down")] * 3, notifier)
+        self.storage.add_rule(1579, "umo:a", "ratio", 72)
         for _ in range(3):
             manager.run_cycle(max_workers=1)
         self.assertEqual(len(notifier.messages), 1)
         self.assertIn("监控异常", notifier.messages[0][1])
-        state = self.storage.get_subscription_state(1579, "umo:a")
-        self.assertEqual(state["fetch_failures"], 3)
-        self.assertEqual(state["health_alerted"], 1)
 
     def test_api_auth_crud_and_validation_envelope(self):
         manager = self.manager([0.70])
@@ -214,15 +292,21 @@ class ServiceTestCase(unittest.TestCase):
             )
             self.assertEqual(search_response.status_code, 200)
             self.assertEqual(search_response.json()["data"][0]["smis_id"], 1579)
-            response = client.post("/v1/subscriptions", headers=headers, json={
+            response = client.post("/v1/rules", headers=headers, json={
                 "umo": "astrQQ:FriendMessage:test", "smis_id": 1579,
-                "max_ratio_percent": 72,
+                "rule_type": "ratio", "threshold": 72,
             })
             self.assertEqual(response.status_code, 200, response.text)
+            rule_id = response.json()["data"]["id"]
+            listed = client.get(
+                "/v1/rules", headers=headers,
+                params={"umo": "astrQQ:FriendMessage:test"},
+            )
+            self.assertEqual(listed.json()["data"][0]["rule_type"], "ratio")
             quote_response = client.get("/v1/quote", headers=headers, params={"q": "1579"})
             self.assertTrue(quote_response.json()["ok"])
-            bad = client.patch("/v1/subscriptions/1579", headers=headers, json={
-                "umo": "astrQQ:FriendMessage:test", "max_ratio_percent": 0,
+            bad = client.patch(f"/v1/rules/{rule_id}", headers=headers, json={
+                "umo": "astrQQ:FriendMessage:test", "threshold": 0,
             })
             self.assertEqual(bad.status_code, 422)
             self.assertEqual(bad.json()["error"]["code"], "validation_error")
@@ -236,14 +320,15 @@ class ServiceTestCase(unittest.TestCase):
                 "name": f"Item {smis_id}",
                 "name_zh": f"饰品 {smis_id}",
             })
+            self.storage.add_rule(smis_id, "umo:test", "ratio", 72)
         manager = self.manager()
-        with self.assertRaisesRegex(Exception, "最多只能配置 20 个饰品"):
-            manager.add_subscription("umo:test", 9999, 72)
+        with self.assertRaisesRegex(Exception, "最多只能监控 20 个饰品"):
+            manager.add_rule("umo:test", 9999, "ratio", 72)
 
-    def test_removing_last_subscription_releases_item_slot(self):
-        self.storage.upsert_subscription(1579, "umo:a", 0.72)
+    def test_removing_last_rule_releases_item_slot(self):
+        rule = self.storage.add_rule(1579, "umo:a", "ratio", 72)
         manager = self.manager()
-        manager.remove_subscription("umo:a", 1579)
+        manager.remove_rule("umo:a", rule["id"])
         self.assertIsNone(self.storage.get_item(1579))
 
 

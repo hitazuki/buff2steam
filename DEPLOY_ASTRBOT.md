@@ -82,14 +82,18 @@ docker inspect astrbot --format '{{range .Mounts}}{{.Source}} -> {{.Destination}
 在 QQ 官方机器人会话中依次执行：
 
 ```text
-/skin watch test
-/skin watch add 1579 72
+/skin test
+/skin rule add 1579 ratio 72
+/skin rule add 1579 t7 75
 /skin quote 1579
-/skin watch list
-/skin watch status
+/skin rule list
+/skin status
 ```
 
-`watch test/add/remove/threshold/status` 需要发送者已加入 AstrBot 管理员列表。
+`rule add/set/remove`、`test` 和 `status` 需要发送者已加入 AstrBot 管理员列表。
+
+服务默认每 1800 秒执行一轮。旧版 `watch` 订阅不会迁移为规则，升级后请使用
+`/skin rule add` 重新创建需要的监控。
 
 ## 5. 运维
 

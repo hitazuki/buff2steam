@@ -90,6 +90,22 @@ class TestSmisClient(unittest.TestCase):
         with self.assertRaises(SmisClientError):
             client.fetch_current(ITEM)
 
+    def test_current_parses_all_platform_quotes(self):
+        client = SmisClient(max_retries=1)
+        client._request = Mock(return_value={
+            "hashName": "Fracture Case", "updateTime": "2026-07-22 12:00:00",
+            "buffSellPrice": 3.30, "buffSellNum": 10,
+            "uuypSellPrice": 3.20, "uuypSellNum": 0,
+            "c5SellPrice": 3.10, "c5SellNum": 1,
+            "igxeSellPrice": 3.40, "igxeSellNum": 2,
+            "ecoSellPrice": 3.25, "ecoSellNum": 3,
+            "steamSellPrice": 5.34, "steamSellNum": 0,
+            "steamTransactionQuantity": 0,
+        })
+        result = client.fetch_current(ITEM)
+        self.assertEqual(result.lowest_platform, ("C5", 3.10, 1))
+        self.assertEqual(result.steam_transaction_quantity, 0)
+
 
 class TestThresholdStrategy(unittest.TestCase):
     def test_steam_net_formula(self):
