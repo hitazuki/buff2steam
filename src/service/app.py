@@ -120,6 +120,13 @@ def create_app(
     async def items():
         return ok(await run_in_threadpool(manager.list_items))
 
+    @app.get("/v1/search", dependencies=[Depends(require_token)])
+    async def search_items(
+        q: str = Query(min_length=1, max_length=200),
+        limit: int = Query(default=10, ge=1, le=20),
+    ):
+        return ok(await run_in_threadpool(manager.search_items, q, limit))
+
     @app.get("/v1/quote", dependencies=[Depends(require_token)])
     async def quote_item(q: str = Query(min_length=1, max_length=200)):
         return ok(await run_in_threadpool(manager.quote, q))

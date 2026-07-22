@@ -79,6 +79,13 @@ class MonitoringManager:
             result.append({**item, "latest": self._snapshot_row_to_dict(latest) if latest else None})
         return result
 
+    def search_items(self, query: str, limit: int = 10) -> list[dict]:
+        try:
+            return self.source.search_items(query, limit=limit)
+        except Exception as exc:
+            logger.warning("SMIS 搜索失败：%s", exc)
+            raise ServiceError(503, "smis_search_failed", "SMIS 搜索暂时不可用") from exc
+
     def list_subscriptions(self, umo: str) -> list[dict]:
         rows = self.storage.list_subscriptions(umo=umo)
         for row in rows:

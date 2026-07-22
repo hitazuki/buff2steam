@@ -45,6 +45,11 @@ class FakeSource:
             raise RuntimeError("not found")
         return dict(ITEM)
 
+    def search_items(self, query, limit=10):
+        if "裂空" not in query and "Fracture" not in query:
+            return []
+        return [{"smis_id": 1579, "name_zh": "裂空武器箱", "rarity": "普通级"}][:limit]
+
     def fetch_current(self, item):
         self.current_calls += 1
         ratio = self.ratios.pop(0) if len(self.ratios) > 1 else self.ratios[0]
@@ -115,6 +120,27 @@ class ServiceTestCase(unittest.TestCase):
         self.assertTrue(second["cached"])
         self.assertEqual(manager.source.current_calls, 1)
 
+    def test_search_uses_smis_catalog(self):
+        results = self.manager().search_items("裂空", limit=5)
+        self.assertEqual(results, [{
+            "smis_id": 1579, "name_zh": "裂空武器箱", "rarity": "普通级",
+        }])
+
+    def test_search_failure_uses_service_error_envelope(self):
+        manager = self.manager()
+        manager.source.search_items = lambda query, limit=10: (_ for _ in ()).throw(
+            RuntimeError("down")
+        )
+        app = create_app(manager=manager, runtime=FakeRuntime(), service_token="secret")
+        with TestClient(app) as client:
+            response = client.get(
+                "/v1/search",
+                headers={"Authorization": "Bearer secret"},
+                params={"q": "裂空"},
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "smis_search_failed")
+
     def test_stale_quote_falls_back_when_source_fails(self):
         self.storage.save_snapshots([snapshot(0.70, -120)])
         manager = self.manager([RuntimeError("down")], cache=1)
@@ -160,6 +186,11 @@ class ServiceTestCase(unittest.TestCase):
         with TestClient(app) as client:
             self.assertEqual(client.get("/v1/items").status_code, 401)
             headers = {"Authorization": "Bearer secret"}
+            search_response = client.get(
+                "/v1/search", headers=headers, params={"q": "裂空"}
+            )
+            self.assertEqual(search_response.status_code, 200)
+            self.assertEqual(search_response.json()["data"][0]["smis_id"], 1579)
             response = client.post("/v1/subscriptions", headers=headers, json={
                 "umo": "astrQQ:FriendMessage:test", "smis_id": 1579,
                 "max_ratio_percent": 72,

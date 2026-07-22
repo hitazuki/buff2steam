@@ -11,10 +11,11 @@ from astrbot.api.star import Context, Star, register
 
 
 HELP_TEXT = """buff2steam 命令：
+/skin search <名称> - 搜索 SMIS 饰品 ID
 /skin quote <SMIS_ID|名称> - 查询已配置饰品
 /skin items - 列出已配置饰品
 /skin watch list - 当前会话订阅
-/skin watch add <SMIS_ID> [阈值百分比]
+/skin watch add <SMIS_ID|名称> [阈值百分比]
 /skin watch remove <SMIS_ID>
 /skin watch threshold <SMIS_ID> <阈值百分比>
 /skin watch test - 测试主动推送
@@ -32,7 +33,7 @@ class ServiceClientError(RuntimeError):
     "astrbot_plugin_buff2steam",
     "buff2steam",
     "饰品行情查询与按会话监控",
-    "1.0.0",
+    "1.1.0",
 )
 class Buff2SteamPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -105,6 +106,26 @@ class Buff2SteamPlugin(Star):
         except ServiceClientError as exc:
             yield event.plain_result(f"查询失败：{exc}")
 
+    @skin.command("search")
+    async def search_item(self, event: AstrMessageEvent, query: str):
+        """搜索 SMIS 全市场饰品。"""
+        try:
+            rows = await self._request(
+                "GET", "/v1/search", params={"q": query, "limit": 10}
+            )
+            if not rows:
+                yield event.plain_result("SMIS 未找到匹配饰品，请尝试更完整的中文名称。")
+                return
+            lines = ["SMIS 搜索结果："]
+            for row in rows:
+                rarity = f"（{row['rarity']}）" if row.get("rarity") else ""
+                lines.append(f"{row['smis_id']} - {row['name_zh']}{rarity}")
+            if len(rows) > 1:
+                lines.append("结果不唯一，请使用 SMIS ID 添加监控。")
+            yield event.plain_result("\n".join(lines))
+        except ServiceClientError as exc:
+            yield event.plain_result(f"搜索失败：{exc}")
+
     @skin.command("items")
     async def list_items(self, event: AstrMessageEvent):
         """列出已配置饰品。"""
@@ -148,10 +169,46 @@ class Buff2SteamPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @watch.command("add")
     async def watch_add(
-        self, event: AstrMessageEvent, smis_id: int, max_ratio_percent: float = 72
+        self, event: AstrMessageEvent, query: str, max_ratio_percent: float = 72
     ):
         """订阅当前会话。"""
         try:
+            target = query.strip()
+            if target.isdigit():
+                smis_id = int(target)
+            else:
+                configured = await self._request("GET", "/v1/items")
+                exact = [
+                    row for row in configured
+                    if target.casefold() in {
+                        str(row.get("cn_name") or "").casefold(),
+                        str(row.get("hash_name") or "").casefold(),
+                    }
+                ]
+                if len(exact) == 1:
+                    smis_id = int(exact[0]["smis_id"])
+                else:
+                    rows = await self._request(
+                        "GET", "/v1/search", params={"q": target, "limit": 10}
+                    )
+                    exact = [
+                        row for row in rows
+                        if str(row.get("name_zh") or "").casefold() == target.casefold()
+                    ]
+                    candidates = exact if exact else rows
+                    if len(candidates) != 1:
+                        if not candidates:
+                            yield event.plain_result(
+                                "订阅失败：SMIS 未找到匹配饰品，请先使用 /skin search。"
+                            )
+                        else:
+                            lines = ["订阅失败：名称匹配到多个饰品，请改用 SMIS ID："]
+                            lines.extend(
+                                f"{row['smis_id']} - {row['name_zh']}" for row in candidates
+                            )
+                            yield event.plain_result("\n".join(lines))
+                        return
+                    smis_id = int(candidates[0]["smis_id"])
             data = await self._request("POST", "/v1/subscriptions", json={
                 "umo": event.unified_msg_origin,
                 "smis_id": smis_id,

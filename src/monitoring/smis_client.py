@@ -150,6 +150,38 @@ class SmisClient:
             "name_zh": str(data["cnName"] or data["hashName"]),
         }
 
+    def search_items(self, query: str, limit: int = 10, game: str = "csgo") -> list[dict[str, Any]]:
+        """Search the SMIS catalog and return lightweight, display-safe candidates."""
+        query = str(query).strip()
+        if not query:
+            return []
+        data = self._request(
+            "POST", "/commodity/suggest", json={"game": game, "text": query}
+        )
+        if not isinstance(data, list):
+            raise SmisClientError("SMIS 搜索结果结构无效")
+        results: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            try:
+                smis_id = int(row["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            name_zh = str(row.get("value") or "").strip()
+            if smis_id <= 0 or not name_zh or smis_id in seen:
+                continue
+            seen.add(smis_id)
+            results.append({
+                "smis_id": smis_id,
+                "name_zh": name_zh,
+                "rarity": str(row.get("rarity") or "").strip() or None,
+            })
+            if len(results) >= max(1, min(int(limit), 20)):
+                break
+        return results
+
     def fetch_history(self, item: dict[str, Any], days: int = 30) -> list[MarketSnapshot]:
         data = self._request(
             "POST",
