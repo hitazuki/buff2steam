@@ -181,11 +181,10 @@ buff2steam/
 项目可作为独立 Docker 服务与 AstrBot 部署在同一 VPS，通过内部网络提供行情查询、
 按 QQ 会话订阅和主动告警。服务不需要部署个人 BUFF/Steam Cookie。
 
-仓库提供两份 Compose 配置：
-
-- [`compose.yml`](compose.yml)：buff2steam 行情与监控服务。
-- [`compose.astrbot.example.yml`](compose.astrbot.example.yml)：参考实际 VPS
-  AstrBot 配置整理的独立部署样例。
+buff2steam 使用仓库中的 [`compose.yml`](compose.yml)。AstrBot 请按
+[AstrBot 官方仓库](https://github.com/AstrBotDevs/AstrBot)及
+[官方 Docker 部署文档](https://docs.astrbot.app/deploy/astrbot/docker.html)
+独立部署，本项目不复制其 Compose 配置，避免样例随 AstrBot 升级而过时。
 
 两个容器通过外部网络 `astrbot-internal` 互访。网络只需创建一次：
 
@@ -193,17 +192,29 @@ buff2steam/
 docker network create astrbot-internal
 ```
 
-新部署 AstrBot 时，将样例复制到独立的 AstrBot 目录并命名为 `compose.yml`：
+在官方 AstrBot Compose 基础上，为 `astrbot` 服务增加 `astrbot-internal`，
+并在顶层将其声明为 `external: true`；已有其他网络时必须保留。不要仅执行
+`docker network connect` 作为长期配置，否则容器重建后连接可能丢失。
 
-```bash
-mkdir -p ~/astrbot && cd ~/astrbot
-cp /path/to/buff2steam/compose.astrbot.example.yml compose.yml
-docker compose up -d
-```
+安装插件前，先从 AstrBot Compose 的卷挂载确认宿主机数据目录：冒号右侧为
+`/AstrBot/data`，左侧目录才是插件安装目标。将
+`astrbot_plugin_buff2steam` 完整复制到该目录下的 `plugins/` 后重启 AstrBot。
+移动 AstrBot 部署目录时应先停容器并整体迁移 `data`，尤其不能遗漏 SQLite
+数据库的 `-wal`、`-shm` 文件、`config`、`plugin_data` 和 `plugins`。
 
-已有 AstrBot Compose 时无需覆盖原配置，只需为 `astrbot` 服务和顶层网络增加
-`astrbot-internal`，并保留 `external: true`。AstrBot WebUI 示例端口为 `6185`；
-公网部署时应通过防火墙、反向代理或其他访问控制保护管理界面。
+插件安装流程：
+
+1. 使用 `docker inspect astrbot --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'`
+   找出映射到 `/AstrBot/data` 的宿主机目录。
+2. 将本仓库的 `astrbot_plugin_buff2steam` 完整复制到该目录的
+   `plugins/astrbot_plugin_buff2steam`。
+3. 执行 `docker restart astrbot`，并从日志确认插件没有加载错误。
+4. 在 AstrBot WebUI 配置 `service_base_url=http://buff2steam:8080`、
+   `service_token` 和 `timeout_seconds=10`。
+5. 在 QQ 中依次执行 `/skin help`、`/skin watch test` 和 `/skin quote 1579`。
+
+AstrBot WebUI 默认使用 `6185` 端口；公网部署时应通过防火墙、反向代理或
+其他访问控制保护管理界面。buff2steam 的 `8080` 只在 Docker 内网暴露。
 
 插件配置中的 `service_token` 必须与 buff2steam 的
 `BUFF2STEAM_SERVICE_TOKEN` 相同；`ASTRBOT_API_KEY` 则是 buff2steam

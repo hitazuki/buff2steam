@@ -1,8 +1,9 @@
 # buff2steam 与 AstrBot Docker 部署
 
-仓库中的 `compose.astrbot.example.yml` 参考实际 VPS 配置，包含 AstrBot 镜像、
-`6185` 端口、`./data:/AstrBot/data` 挂载和内部网络。AstrBot 与 buff2steam
-应放在不同目录，各自使用自己的 `compose.yml`。
+AstrBot 请按 [官方仓库](https://github.com/AstrBotDevs/AstrBot)和
+[官方 Docker 部署文档](https://docs.astrbot.app/deploy/astrbot/docker.html)
+独立部署。AstrBot 与 buff2steam 应放在不同目录，各自维护自己的
+`compose.yml`。
 
 ## 1. 准备内部网络
 
@@ -10,18 +11,21 @@
 docker network create astrbot-internal || true
 ```
 
-新部署 AstrBot 时可复制样例：
+在官方 AstrBot Compose 中，将 `astrbot-internal` 加入 `astrbot` 服务，并在
+顶层声明为外部网络；已有其他网络时保留原配置：
 
-```bash
-mkdir -p ~/astrbot
-cp compose.astrbot.example.yml ~/astrbot/compose.yml
-cd ~/astrbot
-docker compose up -d
+```yaml
+services:
+  astrbot:
+    networks:
+      - astrbot-internal
+
+networks:
+  astrbot-internal:
+    external: true
 ```
 
-已有 AstrBot Compose 时不要直接覆盖，只需把 `astrbot-internal` 同时加入
-AstrBot 服务的 `networks` 和顶层 `networks`。网络使用 `external: true`，因此
-必须在启动任一 Compose 前创建。
+不要只依赖 `docker network connect`，否则 AstrBot 容器重建后额外连接可能丢失。
 
 不要将 buff2steam 的 `8080` 端口映射到公网。AstrBot 与 buff2steam 通过容器名互访。
 
@@ -50,13 +54,22 @@ docker logs -f --tail=100 buff2steam
 ## 3. 安装 AstrBot 插件
 
 ```bash
-mkdir -p ~/astrbot/data/plugins/astrbot_plugin_buff2steam
-cp -a astrbot_plugin_buff2steam/. ~/astrbot/data/plugins/astrbot_plugin_buff2steam/
+ASTRBOT_DATA_DIR=/path/to/astrbot/data
+mkdir -p "$ASTRBOT_DATA_DIR/plugins/astrbot_plugin_buff2steam"
+cp -a astrbot_plugin_buff2steam/. "$ASTRBOT_DATA_DIR/plugins/astrbot_plugin_buff2steam/"
 docker restart astrbot
 ```
 
-如果 AstrBot 不在 `~/astrbot`，将上述宿主机目录替换为其 Compose 中
-`./data:/AstrBot/data` 对应的实际 `data` 目录。
+`ASTRBOT_DATA_DIR` 必须是 AstrBot Compose 中挂载到 `/AstrBot/data` 的宿主机
+目录。可用以下命令核对当前容器实际挂载：
+
+```bash
+docker inspect astrbot --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+```
+
+迁移 AstrBot 目录前先停止容器，并整体复制数据目录。除 `config`、`plugins`、
+`plugin_data` 外，SQLite 的主文件、`-wal` 和 `-shm` 必须作为同一组迁移；
+不要将两个已经分别运行过的数据目录直接合并。
 
 在 AstrBot WebUI 的插件配置中填写：
 
